@@ -1,0 +1,180 @@
+/**
+ * Data models for ArmorIQ SDK.
+ */
+
+/**
+ * Represents a signed intent token from IAP.
+ */
+export interface IntentToken {
+  /** Unique identifier for this token (intent_reference) */
+  tokenId: string;
+  /** CSRG hash of the canonical plan */
+  planHash: string;
+  /** Plan ID from IAP */
+  planId?: string;
+  /** Ed25519 signature from IAP */
+  signature: string;
+  /** Token issuance timestamp (Unix timestamp) */
+  issuedAt: number;
+  /** Token expiration timestamp (Unix timestamp) */
+  expiresAt: number;
+  /** Policy manifest applied to this token */
+  policy: Record<string, any>;
+  /** Composite identity hash (user+agent+context) */
+  compositeIdentity: string;
+  /** Client information (clientId, clientName, orgId) */
+  clientInfo?: Record<string, any>;
+  /** Policy validation result with allowed_tools */
+  policyValidation?: Record<string, any>;
+  /** Array of Merkle proofs for each step */
+  stepProofs: Array<Record<string, any>>;
+  /** Total number of steps in plan */
+  totalSteps: number;
+  /** Full raw token payload */
+  rawToken: Record<string, any>;
+}
+
+/**
+ * Helper functions for IntentToken
+ */
+export namespace IntentToken {
+  /**
+   * Check if the token has expired.
+   */
+  export function isExpired(token: IntentToken): boolean {
+    return Date.now() / 1000 > token.expiresAt;
+  }
+
+  /**
+   * Get seconds until token expiry (negative if expired).
+   */
+  export function timeUntilExpiry(token: IntentToken): number {
+    return token.expiresAt - Date.now() / 1000;
+  }
+}
+
+/**
+ * Represents a captured plan ready for token issuance.
+ * 
+ * The plan structure contains only the steps the agent intends to execute.
+ * Hash and Merkle tree generation happens later in getIntentToken() 
+ * on the CSRG-IAP service side.
+ */
+export interface PlanCapture {
+  /** Plan structure with steps */
+  plan: Record<string, any>;
+  /** LLM identifier used to generate the plan */
+  llm?: string;
+  /** Original prompt used */
+  prompt?: string;
+  /** Additional metadata */
+  metadata: Record<string, any>;
+}
+
+/**
+ * Represents an MCP action invocation request.
+ */
+export interface MCPInvocation {
+  /** MCP identifier */
+  mcp: string;
+  /** Action name to invoke (tool name) */
+  action: string;
+  /** Action parameters */
+  params: Record<string, any>;
+  /** Intent token for verification */
+  intentToken: IntentToken;
+  /** Optional Merkle proof for this action */
+  merkleProof?: Array<Record<string, any>>;
+  /** IAM context to pass to MCP tool (email, user_id, role, limits) */
+  iamContext?: Record<string, any>;
+}
+
+/**
+ * Result from an MCP action invocation.
+ */
+export interface MCPInvocationResult {
+  /** MCP identifier */
+  mcp: string;
+  /** Action that was invoked */
+  action: string;
+  /** Action result data */
+  result: any;
+  /** Execution status */
+  status: string;
+  /** Time taken to execute (seconds) */
+  executionTime?: number;
+  /** Whether token verification succeeded */
+  verified: boolean;
+  /** Extra metadata */
+  metadata: Record<string, any>;
+}
+
+/**
+ * Request for delegating a subtask to another agent.
+ */
+export interface DelegationRequest {
+  /** Target agent identifier */
+  targetAgent: string;
+  /** Subtask plan to delegate */
+  subtask: Record<string, any>;
+  /** Current intent token */
+  intentToken: IntentToken;
+  /** Optional trust policy for delegation */
+  trustPolicy?: Record<string, any>;
+  /** Public key of delegate agent */
+  delegatePublicKey: string;
+  /** Token validity in seconds */
+  validitySeconds: number;
+}
+
+/**
+ * Result from a delegation request.
+ */
+export interface DelegationResult {
+  /** Unique delegation identifier */
+  delegationId: string;
+  /** New intent token for the delegated subtask */
+  delegatedToken: IntentToken;
+  /** Public key of the delegate agent */
+  delegatePublicKey: string;
+  /** Optional target agent identifier */
+  targetAgent?: string;
+  /** Expiration timestamp */
+  expiresAt: number;
+  /** Trust update applied */
+  trustDelta: Record<string, any>;
+  /** Delegation status */
+  status: string;
+  /** Extra metadata */
+  metadata: Record<string, any>;
+}
+
+/**
+ * SDK configuration.
+ */
+export interface SDKConfig {
+  /** IAP service endpoint URL */
+  iapEndpoint: string;
+  /** Default proxy endpoint URL */
+  proxyEndpoint: string;
+  /** Backend endpoint URL */
+  backendEndpoint: string;
+  /** Mapping of MCP identifiers to proxy URLs */
+  proxyEndpoints: Record<string, string>;
+  /** User identifier */
+  userId: string;
+  /** Agent identifier */
+  agentId: string;
+  /** Context identifier */
+  contextId?: string;
+  /** Request timeout in seconds */
+  timeout: number;
+  /** Maximum retry attempts */
+  maxRetries: number;
+  /** Verify SSL certificates */
+  verifySsl: boolean;
+  /** API key for authentication */
+  apiKey?: string;
+  /** Use production endpoints */
+  useProduction: boolean;
+}

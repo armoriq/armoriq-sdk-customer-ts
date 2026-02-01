@@ -1,0 +1,57 @@
+{
+  "name": "@armoriq/sdk",
+  "version": "0.2.6",
+  "description": "ArmorIQ SDK - Build secure AI agents with cryptographic intent verification.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "jest",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "armoriq",
+    "sdk",
+    "ai",
+    "agents",
+    "security",
+    "verification",
+    "mcp",
+    "typescript"
+  ],
+  "author": "ArmorIQ Team <license@armoriq.io>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/armoriq/armoriq-sdk-typescript"
+  },
+  "homepage": "https://armoriq.ai",
+  "bugs": {
+    "url": "https://github.com/armoriq/armoriq-sdk-typescript/issues"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "axios": "^1.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0",
+    "@types/jest": "^29.5.0",
+    "ts-jest": "^29.1.0",
+    "typescript": "^5.4.0",
+    "prettier": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
