@@ -36,9 +36,9 @@ export class ArmorIQClient {
   private static readonly DEFAULT_BACKEND_ENDPOINT = 'https://customer-api.armoriq.ai';
 
   // Local development endpoints
-  private static readonly LOCAL_IAP_ENDPOINT = 'http://localhost:8080';
-  private static readonly LOCAL_PROXY_ENDPOINT = 'http://localhost:3001';
-  private static readonly LOCAL_BACKEND_ENDPOINT = 'http://localhost:3000';
+  private static readonly LOCAL_IAP_ENDPOINT = 'http://127.0.0.1:8000';
+  private static readonly LOCAL_PROXY_ENDPOINT = 'http://127.0.0.1:3001';
+  private static readonly LOCAL_BACKEND_ENDPOINT = 'http://127.0.0.1:3000';
 
   private iapEndpoint: string;
   private defaultProxyEndpoint: string;
@@ -58,6 +58,8 @@ export class ArmorIQClient {
     // Determine if using production based on environment
     const envMode = process.env.ARMORIQ_ENV?.toLowerCase() || 'production';
     const useProd = (options.useProduction ?? true) && envMode === 'production';
+    //const envMode = process.env.ARMORIQ_ENV?.toLowerCase() || 'development';
+    //const useProd = (options.useProduction ?? false) || envMode === 'production';
 
     // Load IAP endpoint
     this.iapEndpoint =
@@ -273,6 +275,7 @@ export class ArmorIQClient {
         merkle_root: data.merkle_root,
         intent_reference: data.intent_reference,
         composite_identity: data.composite_identity || '',
+        step_proofs: data.step_proofs || [],
       };
 
       const token: IntentToken = {
@@ -289,11 +292,12 @@ export class ArmorIQClient {
         stepProofs: data.step_proofs || [],
         totalSteps: planCapture.plan.steps?.length || 0,
         rawToken,
+        jwtToken: data.jwt_token,
       };
 
       console.log(
         `Intent token issued: id=${token.tokenId}, plan_hash=${token.planHash.slice(0, 16)}..., ` +
-          `expires=${IntentToken.timeUntilExpiry(token).toFixed(1)}s`
+          `expires=${IntentToken.timeUntilExpiry(token).toFixed(1)}s, stepProofs=${token.stepProofs?.length || 0}`
       );
       return token;
     } catch (error: any) {
@@ -386,7 +390,6 @@ export class ArmorIQClient {
     const plan = intentToken.rawToken?.plan || {};
     const steps = plan.steps || [];
     let stepIndex: number | null = null;
-
     for (let idx = 0; idx < steps.length; idx++) {
       if (typeof steps[idx] === 'object' && steps[idx].action === action) {
         stepIndex = idx;

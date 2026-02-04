@@ -32,6 +32,8 @@ export interface IntentToken {
   totalSteps: number;
   /** Full raw token payload */
   rawToken: Record<string, any>;
+  /** JWT token for verify-step endpoint */
+  jwtToken?: string;
 }
 
 /**
