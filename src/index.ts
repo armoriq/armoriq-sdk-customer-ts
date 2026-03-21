@@ -18,6 +18,8 @@ export {
   TokenExpiredException,
   DelegationException,
   ConfigurationException,
+  PolicyBlockedException,
+  PolicyHoldException,
 } from './exceptions';
 export {
   IntentToken,
@@ -27,6 +29,14 @@ export {
   DelegationRequest,
   DelegationResult,
   SDKConfig,
+  MCPSemanticMetadata,
+  ToolSemanticEntry,
+  PolicyContext,
+  InvokeOptions,
+  HoldInfo,
+  DelegationRequestParams,
+  DelegationRequestResult,
+  ApprovedDelegation,
 } from './models';
 
 export const VERSION = '0.2.6';

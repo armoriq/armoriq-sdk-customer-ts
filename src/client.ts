@@ -10,6 +10,13 @@ import {
   MCPInvocationResult,
   DelegationResult,
   SDKConfig,
+  MCPSemanticMetadata,
+  PolicyContext,
+  InvokeOptions,
+  DelegationRequestParams,
+  DelegationRequestResult,
+  ApprovedDelegation,
+  HoldInfo,
 } from './models';
 import {
   InvalidTokenException,
@@ -18,6 +25,8 @@ import {
   DelegationException,
   TokenExpiredException,
   ConfigurationException,
+  PolicyBlockedException,
+  PolicyHoldException,
 } from './exceptions';
 
 /**
@@ -53,6 +62,7 @@ export class ArmorIQClient {
   private verifySsl: boolean;
   private httpClient: AxiosInstance;
   private tokenCache: Map<string, IntentToken>;
+  private metadataCache: Map<string, MCPSemanticMetadata>;
 
   constructor(options: Partial<SDKConfig> & { apiKey?: string; useProduction?: boolean } = {}) {
     // Determine if using production based on environment
@@ -129,6 +139,7 @@ export class ArmorIQClient {
     });
 
     this.tokenCache = new Map();
+    this.metadataCache = new Map();
 
     console.log(
       `ArmorIQ SDK initialized: mode=${useProd ? 'production' : 'development'}, ` +
@@ -439,17 +450,30 @@ export class ArmorIQClient {
       const startTime = Date.now();
       const response = await this.httpClient.post(`${proxyUrl}/invoke`, payload, { headers });
 
-      if (response.status >= 400) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      const executionTime = (Date.now() - startTime) / 1000;
+      const responseData = response.data;
+
+      // Check for enforcement responses (hold/block) BEFORE generic error handling
+      if (responseData?.enforcement) {
+        const enforcement = responseData.enforcement;
+        const enrichedError: any = new Error(responseData.message || `Enforcement: ${enforcement.action}`);
+        enrichedError.response = { status: response.status, data: responseData };
+        enrichedError.name = enforcement.action === 'block' ? 'PolicyBlockedException' : 'PolicyHoldException';
+        throw enrichedError;
       }
 
-      const executionTime = (Date.now() - startTime) / 1000;
+      if (response.status >= 400) {
+        const enrichedError: any = new Error(`HTTP ${response.status}: ${response.statusText}`);
+        enrichedError.response = { status: response.status, data: responseData };
+        throw enrichedError;
+      }
+
       const contentType = response.headers['content-type'] || '';
       let data: any;
 
       // Handle SSE format
-      if (contentType.includes('text/event-stream')) {
-        const lines = response.data.split('\n');
+      if (contentType.includes('text/event-stream') && typeof responseData === 'string') {
+        const lines = responseData.split('\n');
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             try {
@@ -464,11 +488,11 @@ export class ArmorIQClient {
           throw new MCPInvocationException('No data in SSE response', mcp, action);
         }
       } else {
-        data = response.data;
+        data = responseData;
       }
 
       // Check for JSON-RPC error
-      if (data.error) {
+      if (data.error && !data.enforcement) {
         const errorMsg = data.error.message || 'Unknown error';
         const errorCode = data.error.code || -1;
         const errorData = data.error.data || '';
@@ -480,25 +504,46 @@ export class ArmorIQClient {
       }
 
       const resultData = data.result || data;
+      const hasToolError =
+        Boolean(resultData?.isError) ||
+        Boolean(resultData?.error) ||
+        Boolean(resultData?.is_error);
       const result: MCPInvocationResult = {
         mcp,
         action,
         result: resultData,
-        status: 'success',
+        status: hasToolError ? 'error' : 'success',
         executionTime,
         verified: true,
-        metadata: {},
+        metadata: {
+          hasToolError,
+        },
       };
 
-      console.log(`MCP invocation succeeded: ${action} in ${executionTime.toFixed(2)}s`);
+      console.log(
+        `MCP invocation ${hasToolError ? 'returned error payload' : 'succeeded'}: ${action} in ${executionTime.toFixed(2)}s`
+      );
       return result;
     } catch (error: any) {
       if (error instanceof MCPInvocationException) {
         throw error;
       }
 
+      // Re-throw enforcement errors so invokeWithPolicy() can catch them
+      if (error.name === 'PolicyBlockedException' || error.name === 'PolicyHoldException') {
+        throw error;
+      }
+
       const statusCode = error.response?.status;
       const errorDetail = error.response?.data || error.message;
+
+      // Check if the 403 response is actually an enforcement response
+      if (statusCode === 403 && errorDetail?.enforcement) {
+        const enrichedError: any = new Error(errorDetail.message || 'Enforcement action');
+        enrichedError.response = error.response;
+        enrichedError.name = errorDetail.enforcement.action === 'block' ? 'PolicyBlockedException' : 'PolicyHoldException';
+        throw enrichedError;
+      }
 
       if (statusCode === 401 || statusCode === 403) {
         throw new InvalidTokenException(`Token verification failed: ${errorDetail}`);
@@ -639,6 +684,347 @@ export class ArmorIQClient {
     } catch (error: any) {
       console.error(`Token verification failed: ${error.message}`);
       return false;
+    }
+  }
+
+  // ─── Semantic Metadata & Policy Context ──────────────────────────
+
+  /**
+   * Fetch and cache semantic tool metadata for an MCP server.
+   */
+  async fetchToolMetadata(mcpName: string): Promise<MCPSemanticMetadata> {
+    const cached = this.metadataCache.get(mcpName);
+    if (cached) return cached;
+
+    try {
+      const response = await this.httpClient.get(
+        `${this.backendEndpoint}/mcp/tool-metadata/${encodeURIComponent(mcpName)}`,
+        { headers: { 'X-API-Key': this.apiKey } },
+      );
+
+      if (response.status >= 400) {
+        console.warn(`Failed to fetch tool metadata for ${mcpName}: ${response.status}`);
+        return { mcpId: '', name: mcpName, toolMetadata: {}, roleMapping: {} };
+      }
+
+      const metadata: MCPSemanticMetadata = response.data?.data || {
+        mcpId: '',
+        name: mcpName,
+        toolMetadata: {},
+        roleMapping: {},
+      };
+      this.metadataCache.set(mcpName, metadata);
+      return metadata;
+    } catch (error: any) {
+      console.warn(`Could not fetch tool metadata for ${mcpName}: ${error.message}`);
+      return { mcpId: '', name: mcpName, toolMetadata: {}, roleMapping: {} };
+    }
+  }
+
+  /**
+   * Eagerly load metadata for an MCP so subsequent invoke() calls are fast.
+   */
+  async loadMcp(mcpName: string): Promise<void> {
+    await this.fetchToolMetadata(mcpName);
+  }
+
+  /**
+   * Enrich policy context from semantic metadata for a tool invocation.
+   */
+  private async enrichPolicyContext(
+    mcpName: string,
+    toolName: string,
+    params: Record<string, any>,
+  ): Promise<PolicyContext> {
+    const metadata = await this.fetchToolMetadata(mcpName);
+    const toolMeta = metadata.toolMetadata?.[toolName];
+
+    if (!toolMeta || !toolMeta.isFinancial) {
+      return { is_financial: false };
+    }
+
+    let amount: number | undefined;
+    if (toolMeta.amountFields) {
+      for (const field of toolMeta.amountFields) {
+        if (params[field] != null) {
+          const raw = Number(params[field]);
+          amount = toolMeta.amountUnit === 'cents' ? raw / 100 : raw;
+          break;
+        }
+      }
+    }
+
+    return {
+      is_financial: true,
+      transaction_type: toolMeta.transactionType || toolName,
+      amount,
+      recipient_id: toolMeta.recipientField ? params[toolMeta.recipientField] : undefined,
+    };
+  }
+
+  /**
+   * Resolve an org role to a domain-specific role for an MCP.
+   */
+  async resolveRole(mcpName: string, orgRole: string): Promise<string> {
+    const metadata = await this.fetchToolMetadata(mcpName);
+    return metadata.roleMapping?.[orgRole] || orgRole;
+  }
+
+  // ─── Delegation Automation ──────────────────────────────────────
+
+  /**
+   * Resolve the user's role and limit from the backend for delegation.
+   */
+  private async resolveUserRole(userEmail: string): Promise<{ role: string; limit: number }> {
+    try {
+      const response = await this.httpClient.get(
+        `${this.backendEndpoint}/delegation/my-role`,
+        {
+          params: {},
+          headers: { 'X-API-Key': this.apiKey, 'X-User-Email': userEmail },
+          timeout: 5000,
+        },
+      );
+      if (response.status < 400 && response.data?.role) {
+        return {
+          role: response.data.role,
+          limit: response.data.limit ?? 0,
+        };
+      }
+    } catch (e) {
+      // Fallback below
+    }
+    return { role: 'agent_user', limit: 0 };
+  }
+
+  /**
+   * Create a delegation request on the backend.
+   */
+  async createDelegationRequest(params: DelegationRequestParams): Promise<DelegationRequestResult> {
+    const response = await this.httpClient.post(
+      `${this.backendEndpoint}/delegation/request`,
+      params,
+      { headers: { 'X-API-Key': this.apiKey, 'X-User-Email': params.requesterEmail } },
+    );
+
+    if (response.status >= 400) {
+      throw new DelegationException(
+        `Failed to create delegation request: ${response.data?.message || response.statusText}`,
+      );
+    }
+
+    return response.data;
+  }
+
+  /**
+   * Check if a delegation request has been approved.
+   */
+  async checkApprovedDelegation(
+    userEmail: string,
+    tool: string,
+    amount: number,
+  ): Promise<ApprovedDelegation | null> {
+    const response = await this.httpClient.get(
+      `${this.backendEndpoint}/delegation/check-approved`,
+      {
+        params: { tool, amount },
+        headers: { 'X-API-Key': this.apiKey, 'X-User-Email': userEmail },
+      },
+    );
+
+    if (response.status >= 400 || !response.data?.approved) {
+      return null;
+    }
+
+    return response.data;
+  }
+
+  /**
+   * Mark a delegation as executed.
+   */
+  async markDelegationExecuted(userEmail: string, delegationId: string): Promise<void> {
+    await this.httpClient.post(
+      `${this.backendEndpoint}/delegation/mark-executed`,
+      { delegationId },
+      { headers: { 'X-API-Key': this.apiKey, 'X-User-Email': userEmail } },
+    );
+  }
+
+  /**
+   * Mark an intent plan as completed after all tools have been executed.
+   */
+  async completePlan(planId: string): Promise<void> {
+    await this.updatePlanStatus(planId, 'completed');
+  }
+
+  /**
+   * Update an intent plan's status.
+   * Valid statuses: 'active', 'completed', 'failed', 'expired'
+   */
+  async updatePlanStatus(planId: string, status: string): Promise<void> {
+    try {
+      await this.httpClient.post(
+        `${this.backendEndpoint}/iap/plans/${planId}/status`,
+        { status },
+        { headers: { 'X-API-Key': this.apiKey } },
+      );
+      console.log(`Plan ${planId} status updated to ${status}`);
+    } catch (error: any) {
+      console.warn(`Failed to update plan ${planId} status: ${error.message}`);
+    }
+  }
+
+  /**
+   * Enhanced invoke with automatic policy context enrichment and delegation handling.
+   */
+  async invokeWithPolicy(
+    mcp: string,
+    action: string,
+    intentToken: IntentToken,
+    params?: Record<string, any>,
+    options?: InvokeOptions,
+  ): Promise<MCPInvocationResult> {
+    // Enrich with policy context from semantic metadata
+    const policyContext = await this.enrichPolicyContext(mcp, action, params || {});
+    const enrichedParams = {
+      ...(params || {}),
+      _policy_context: policyContext,
+    };
+
+    try {
+      return await this.invoke(
+        mcp,
+        action,
+        intentToken,
+        enrichedParams,
+        undefined,
+        options?.userEmail,
+      );
+    } catch (error: any) {
+      // Detect structured enforcement responses
+      const responseData = error.response?.data;
+      if (!responseData?.enforcement) throw error;
+
+      const enforcement = responseData.enforcement;
+
+      if (enforcement.action === 'block') {
+        throw new PolicyBlockedException(
+          responseData.message || 'Action blocked by policy',
+          enforcement.action,
+          enforcement.reason,
+          enforcement.metadata,
+        );
+      }
+
+      if (enforcement.action === 'hold' && enforcement.requiresApproval) {
+        const holdInfo: HoldInfo = {
+          reason: enforcement.reason,
+          amount: enforcement.metadata?.amount,
+          approvalThreshold: enforcement.metadata?.approvalThreshold,
+          tool: action,
+          mcp,
+        };
+
+        options?.onHold?.(holdInfo);
+
+        if (!options?.waitForApproval || !options?.userEmail) {
+          throw new PolicyHoldException(
+            responseData.message || 'Action held for approval',
+            responseData.delegation_context,
+            enforcement.metadata,
+          );
+        }
+
+        // Auto-create delegation request
+        const delegationCtx = responseData.delegation_context || {};
+
+        // Resolve requester role/limit: use options, or auto-resolve from backend
+        let requesterRole = options.requesterRole || 'agent_user';
+        let requesterLimit = options.requesterLimit ?? 0;
+        if (!options.requesterRole) {
+          try {
+            const resolved = await this.resolveUserRole(options.userEmail);
+            requesterRole = resolved.role;
+            requesterLimit = resolved.limit;
+          } catch (_e) {
+            // Use defaults
+          }
+        }
+
+        let delegationResult: DelegationRequestResult;
+        try {
+          delegationResult = await this.createDelegationRequest({
+            tool: action,
+            action: 'execute',
+            arguments: params || {},
+            amount: policyContext.amount ?? 0,
+            requesterEmail: options.userEmail,
+            requesterRole,
+            requesterLimit,
+            domain: delegationCtx.domain || mcp,
+            targetUrl: delegationCtx.targetUrl,
+            planId: delegationCtx.planId || intentToken.planId,
+            intentReference: delegationCtx.intentReference || intentToken.tokenId,
+            merkleRoot: delegationCtx.merkleRoot || intentToken.planHash,
+            reason: enforcement.reason,
+          });
+        } catch (delegationError: any) {
+          console.error(`Failed to create delegation request: ${delegationError.message}`);
+          throw new PolicyHoldException(
+            responseData.message || 'Action held for approval (delegation request failed)',
+            responseData.delegation_context,
+            { ...enforcement.metadata, delegationError: delegationError.message },
+          );
+        }
+
+        holdInfo.delegationId = delegationResult.delegationId;
+        options?.onHold?.(holdInfo);
+
+        // Poll for approval
+        const timeout = options.delegationTimeoutMs || 30 * 60 * 1000;
+        const startTime = Date.now();
+        let pollInterval = 3000;
+
+        while (Date.now() - startTime < timeout) {
+          await new Promise((resolve) => setTimeout(resolve, pollInterval));
+          pollInterval = Math.min(pollInterval * 1.5, 15000);
+
+          const approved = await this.checkApprovedDelegation(
+            options.userEmail,
+            action,
+            policyContext.amount || 0,
+          );
+
+          if (approved) {
+            // Retry with delegation context
+            const retryParams = {
+              ...enrichedParams,
+              _delegation_id: approved.delegationId,
+              _approvals: 999,
+            };
+
+            const result = await this.invoke(
+              mcp,
+              action,
+              intentToken,
+              retryParams,
+              undefined,
+              options.userEmail,
+            );
+
+            await this.markDelegationExecuted(options.userEmail, approved.delegationId);
+            return result;
+          }
+        }
+
+        throw new DelegationException(
+          `Delegation approval timed out after ${timeout / 1000}s`,
+          undefined,
+          delegationResult.delegationId,
+        );
+      }
+
+      throw error;
     }
   }
 
