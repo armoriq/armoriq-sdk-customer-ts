@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, 'skip ci')"
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Check for version changes
+        id: version-check
+        run: |
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          LAST_VERSION="${LAST_TAG#v}"
+          
+          if [ "$CURRENT_VERSION" != "$LAST_VERSION" ]; then
+            echo "version-changed=true" >> $GITHUB_OUTPUT
+            echo "new-version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+            echo "last-tag=$LAST_TAG" >> $GITHUB_OUTPUT
+          else
+            echo "version-changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build
+        if: steps.version-check.outputs.version-changed == 'true'
+        run: npm run build
+
+      - name: Create and push tag
+        if: steps.version-check.outputs.version-changed == 'true'
+        run: |
+          NEW_VERSION=${{ steps.version-check.outputs.new-version }}
+          git tag -a "v${NEW_VERSION}" -m "Release version ${NEW_VERSION}" || true
+          git push origin "v${NEW_VERSION}" || true
+
+      - name: Publish to npm
+        if: steps.version-check.outputs.version-changed == 'true'
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        if: steps.version-check.outputs.version-changed == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version-check.outputs.new-version }}
+          name: Release v${{ steps.version-check.outputs.new-version }}
+          body: |
+            ## Changes
+            Published to npm: [@armoriq/sdk](https://www.npmjs.com/package/@armoriq/sdk)
+            
+            [Compare changes](${{ github.server_url }}/${{ github.repository }}/compare/${{ steps.version-check.outputs.last-tag }}...v${{ steps.version-check.outputs.new-version }})
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
