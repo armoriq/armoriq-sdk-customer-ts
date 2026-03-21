@@ -122,6 +122,49 @@ export class DelegationException extends ArmorIQException {
 }
 
 /**
+ * Raised when a policy enforcement blocks the action.
+ */
+export class PolicyBlockedException extends ArmorIQException {
+  public enforcementAction?: string;
+  public reason?: string;
+  public metadata?: Record<string, any>;
+
+  constructor(
+    message: string,
+    enforcementAction?: string,
+    reason?: string,
+    metadata?: Record<string, any>
+  ) {
+    super(message);
+    this.name = 'PolicyBlockedException';
+    this.enforcementAction = enforcementAction;
+    this.reason = reason;
+    this.metadata = metadata;
+    Object.setPrototypeOf(this, PolicyBlockedException.prototype);
+  }
+}
+
+/**
+ * Raised when a policy enforcement holds the action for approval.
+ */
+export class PolicyHoldException extends ArmorIQException {
+  public delegationContext?: Record<string, any>;
+  public metadata?: Record<string, any>;
+
+  constructor(
+    message: string,
+    delegationContext?: Record<string, any>,
+    metadata?: Record<string, any>
+  ) {
+    super(message);
+    this.name = 'PolicyHoldException';
+    this.delegationContext = delegationContext;
+    this.metadata = metadata;
+    Object.setPrototypeOf(this, PolicyHoldException.prototype);
+  }
+}
+
+/**
  * Raised when SDK configuration is invalid.
  * 
  * This can occur due to:

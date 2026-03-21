@@ -152,6 +152,107 @@ export interface DelegationResult {
 }
 
 /**
+ * Semantic metadata for a single tool on an MCP server.
+ */
+export interface ToolSemanticEntry {
+  isFinancial?: boolean;
+  transactionType?: string;
+  amountFields?: string[];
+  amountUnit?: string;
+  currency?: string;
+  recipientField?: string;
+  category?: string;
+}
+
+/**
+ * Semantic metadata for an MCP server (tool annotations + role mapping).
+ */
+export interface MCPSemanticMetadata {
+  mcpId: string;
+  name: string;
+  toolMetadata: Record<string, ToolSemanticEntry>;
+  roleMapping: Record<string, string>;
+}
+
+/**
+ * Policy context enriched from semantic metadata.
+ */
+export interface PolicyContext {
+  is_financial: boolean;
+  transaction_type?: string;
+  amount?: number;
+  recipient_id?: string;
+}
+
+/**
+ * Options for the enhanced invoke() method.
+ */
+export interface InvokeOptions {
+  /** Automatically poll for delegation approval on hold */
+  waitForApproval?: boolean;
+  /** Max time to wait for delegation approval (ms, default 30min) */
+  delegationTimeoutMs?: number;
+  /** Callback when a hold is detected */
+  onHold?: (info: HoldInfo) => void;
+  /** User email for delegation context */
+  userEmail?: string;
+  /** Requester's role for delegation (auto-resolved if not provided) */
+  requesterRole?: string;
+  /** Requester's approval limit for delegation (auto-resolved if not provided) */
+  requesterLimit?: number;
+}
+
+/**
+ * Information about a hold enforcement action.
+ */
+export interface HoldInfo {
+  delegationId?: string;
+  reason: string;
+  amount?: number;
+  approvalThreshold?: number;
+  tool: string;
+  mcp: string;
+}
+
+/**
+ * Parameters for creating a delegation request.
+ */
+export interface DelegationRequestParams {
+  tool: string;
+  action: string;
+  arguments?: Record<string, unknown>;
+  amount?: number;
+  requesterEmail: string;
+  requesterRole?: string;
+  requesterLimit?: number;
+  domain?: string;
+  targetUrl?: string;
+  planId?: string;
+  intentReference?: string;
+  merkleRoot?: string;
+  reason?: string;
+}
+
+/**
+ * Result from creating a delegation request.
+ */
+export interface DelegationRequestResult {
+  delegationId: string;
+  status: string;
+  expiresAt: string;
+}
+
+/**
+ * Result from checking an approved delegation.
+ */
+export interface ApprovedDelegation {
+  delegationId: string;
+  approverEmail: string;
+  approverRole: string;
+  delegationToken?: string;
+}
+
+/**
  * SDK configuration.
  */
 export interface SDKConfig {
