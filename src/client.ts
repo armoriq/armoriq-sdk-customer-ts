@@ -729,6 +729,38 @@ export class ArmorIQClient {
   }
 
   /**
+   * List all MCPs registered for this org (resolved via API key).
+   */
+  async listMcps(): Promise<Array<{ mcpId: string; name: string; url: string }>> {
+    const response = await this.httpClient.get(
+      `${this.backendEndpoint}/mcp/my-servers`,
+      { headers: { 'X-API-Key': this.apiKey } },
+    );
+    if (response.status >= 400) {
+      throw new MCPInvocationException(
+        `listMcps failed: ${response.status} ${JSON.stringify(response.data)}`,
+      );
+    }
+    return response.data?.data || [];
+  }
+
+  /**
+   * Get full OpenAI-compatible tool schemas for a named MCP.
+   */
+  async getMcpToolSchemas(mcpName: string): Promise<any[]> {
+    const response = await this.httpClient.get(
+      `${this.backendEndpoint}/mcp/tools/${encodeURIComponent(mcpName)}`,
+      { headers: { 'X-API-Key': this.apiKey } },
+    );
+    if (response.status >= 400) {
+      throw new MCPInvocationException(
+        `getMcpToolSchemas(${mcpName}) failed: ${response.status} ${JSON.stringify(response.data)}`,
+      );
+    }
+    return response.data?.data?.tools || [];
+  }
+
+  /**
    * Enrich policy context from semantic metadata for a tool invocation.
    */
   private async enrichPolicyContext(
