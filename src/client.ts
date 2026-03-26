@@ -362,11 +362,8 @@ export class ArmorIQClient {
       iamContext.agent_id = intentToken.rawToken.agent_id || this.agentId;
     }
 
-    // Prepare invocation payload
-    const invokeParams: Record<string, any> = { ...(params || {}), _iam_context: iamContext };
-    if (userEmail) {
-      invokeParams.user_email = userEmail;
-    }
+    // Prepare invocation payload (clean tool params only — proxy handles IAM injection)
+    const invokeParams: Record<string, any> = { ...(params || {}) };
 
     const payload: Record<string, any> = {
       mcp,
@@ -377,6 +374,8 @@ export class ArmorIQClient {
       intent_token: intentToken.rawToken,
       merkle_proof: merkleProof,
       plan: intentToken.rawToken?.plan,
+      _iam_context: iamContext,
+      ...(userEmail ? { user_email: userEmail } : {}),
     };
 
     // Prepare headers
