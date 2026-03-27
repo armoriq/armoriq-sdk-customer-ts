@@ -34,6 +34,8 @@ export interface IntentToken {
   rawToken: Record<string, any>;
   /** JWT token for verify-step endpoint */
   jwtToken?: string;
+  /** OPA-formatted policy snapshot for proxy → OPA direct enforcement */
+  policySnapshot?: Array<Record<string, any>>;
 }
 
 /**
