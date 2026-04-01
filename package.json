@@ -1,6 +1,6 @@
 {
   "name": "@armoriq/sdk",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "ArmorIQ SDK - Build secure AI agents with cryptographic intent verification.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -8,7 +8,7 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "test": "jest",
-    "lint": "eslint src --ext .ts",
+    "lint": "eslint 'src/**/*.ts'",
     "format": "prettier --write \"src/**/*.ts\"",
     "prepublishOnly": "npm run build"
   },

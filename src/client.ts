@@ -2,7 +2,7 @@
  * ArmorIQ SDK Client - Main entry point for SDK usage.
  */
 
-import axios, { AxiosInstance, AxiosError } from 'axios';
+import axios, { AxiosInstance } from 'axios';
 import * as crypto from 'crypto';
 import {
   IntentToken,
@@ -362,7 +362,7 @@ export class ArmorIQClient {
     }
 
     // Get proxy endpoint for this MCP
-    let proxyUrl =
+    const proxyUrl =
       this.proxyEndpoints[mcp] ||
       process.env[`${mcp.toUpperCase()}_PROXY_URL`] ||
       this.defaultProxyEndpoint;
