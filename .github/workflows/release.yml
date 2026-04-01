@@ -16,6 +16,7 @@ on:
 permissions:
   contents: write
   id-token: write
+  pull-requests: write
 
 jobs:
   release:
@@ -49,17 +50,53 @@ jobs:
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Bump version
         id: bump
         run: |
-          npm version ${{ inputs.bump }} -m "release: v%s"
-          echo "version=$(node -p 'require(\"./package.json\").version')" >> $GITHUB_OUTPUT
+          npm version ${{ inputs.bump }} --no-git-tag-version
+          NEW_VERSION=$(node -p 'require("./package.json").version')
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
 
-      - name: Push tag and commit
+      - name: Create release branch and PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git push origin main --follow-tags
+          BRANCH="release/v${{ steps.bump.outputs.version }}"
+          git checkout -b "$BRANCH"
+          git add package.json package-lock.json
+          git commit -m "release: v${{ steps.bump.outputs.version }}"
+          git push origin "$BRANCH"
+          PR_URL=$(gh pr create --title "release: v${{ steps.bump.outputs.version }}" --body "Automated version bump to v${{ steps.bump.outputs.version }}" --base main --head "$BRANCH")
+          echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
+          gh pr merge "$PR_URL" --squash --auto
+
+      - name: Wait for PR merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_URL="${{ steps.pr.outputs.pr_url }}"
+          for i in $(seq 1 30); do
+            STATE=$(gh pr view "$PR_URL" --json state -q '.state')
+            if [ "$STATE" = "MERGED" ]; then
+              echo "PR merged!"
+              exit 0
+            fi
+            echo "Waiting for merge... ($i/30)"
+            sleep 10
+          done
+          echo "Timeout waiting for PR merge"
+          exit 1
+
+      - name: Tag and push
+        run: |
+          git fetch origin main
+          git checkout main
+          git pull
+          git tag -a "v${{ steps.bump.outputs.version }}" -m "Release v${{ steps.bump.outputs.version }}"
+          git push origin "v${{ steps.bump.outputs.version }}"
 
       - name: Publish to npm (provenance)
         run: npm publish --provenance --access public
@@ -70,3 +107,10 @@ jobs:
           tag_name: v${{ steps.bump.outputs.version }}
           name: v${{ steps.bump.outputs.version }}
           generate_release_notes: true
+
+      - name: Cleanup release branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git push origin --delete "release/v${{ steps.bump.outputs.version }}" || true
