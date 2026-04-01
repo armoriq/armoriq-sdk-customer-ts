@@ -38,7 +38,6 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@armoriq/sdk": "^0.2.7",
     "axios": "^1.7.0"
   },
   "devDependencies": {
