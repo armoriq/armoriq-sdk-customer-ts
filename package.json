@@ -1,6 +1,6 @@
 {
   "name": "@armoriq/sdk",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "ArmorIQ SDK - Build secure AI agents with cryptographic intent verification.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
