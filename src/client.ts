@@ -312,10 +312,28 @@ export class ArmorIQClient {
       );
       return token;
     } catch (error: any) {
+      const responseData = error?.response?.data;
+      const deniedTools = responseData?.policy_validation?.denied_tools;
+      const deniedReasons = responseData?.policy_validation?.denied_reasons;
+      if (error?.response?.status === 403 || (Array.isArray(deniedTools) && deniedTools.length > 0)) {
+        const reason =
+          (Array.isArray(deniedReasons) && deniedReasons.length > 0
+            ? deniedReasons.join('; ')
+            : responseData?.message) || 'Blocked by policy';
+        throw new PolicyBlockedException(
+          `Policy blocked intent token issuance: ${reason}`,
+          responseData?.policy_validation?.default_enforcement_action,
+          reason,
+          responseData?.policy_validation,
+        );
+      }
       if (error instanceof InvalidTokenException) {
         throw error;
       }
-      const message = error.response?.data || error.message;
+      const message =
+        responseData?.message ||
+        (typeof responseData === 'string' ? responseData : undefined) ||
+        error.message;
       throw new InvalidTokenException(`Failed to get intent token: ${message}`);
     }
   }
