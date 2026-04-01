@@ -304,6 +304,7 @@ export class ArmorIQClient {
         totalSteps: planCapture.plan.steps?.length || 0,
         rawToken,
         jwtToken: data.jwt_token,
+        policySnapshot: data.policy_snapshot,
       };
 
       console.log(
@@ -394,6 +395,7 @@ export class ArmorIQClient {
       plan: intentToken.rawToken?.plan,
       _iam_context: iamContext,
       ...(userEmail ? { user_email: userEmail } : {}),
+      ...(intentToken.policySnapshot ? { policy_snapshot: intentToken.policySnapshot } : {}),
     };
 
     // Prepare headers
