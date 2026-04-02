@@ -281,6 +281,7 @@ export class ArmorIQClient {
       const tokenData = data.token || {};
       const rawToken = {
         plan: planCapture.plan,
+        plan_id: data.plan_id,
         token: tokenData,
         plan_hash: data.plan_hash,
         merkle_root: data.merkle_root,
