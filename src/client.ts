@@ -39,15 +39,25 @@ import {
  * - Agent delegation
  */
 export class ArmorIQClient {
-  // Production endpoints (default) - Customer-facing services
+  // Production endpoints (default) - ArmorIQ platform
   private static readonly DEFAULT_IAP_ENDPOINT = 'https://customer-iap.armoriq.ai';
   private static readonly DEFAULT_PROXY_ENDPOINT = 'https://customer-proxy.armoriq.ai';
   private static readonly DEFAULT_BACKEND_ENDPOINT = 'https://customer-api.armoriq.ai';
 
-  // Local development endpoints
+  // ArmorClaw standalone product endpoints
+  private static readonly ARMORCLAW_IAP_ENDPOINT = 'https://iap.armorclaw.io';
+  private static readonly ARMORCLAW_PROXY_ENDPOINT = 'https://proxy.armorclaw.io';
+  private static readonly ARMORCLAW_BACKEND_ENDPOINT = 'https://api.armorclaw.io';
+
+  // Local development endpoints - ArmorIQ platform
   private static readonly LOCAL_IAP_ENDPOINT = 'http://127.0.0.1:8000';
   private static readonly LOCAL_PROXY_ENDPOINT = 'http://127.0.0.1:3001';
   private static readonly LOCAL_BACKEND_ENDPOINT = 'http://127.0.0.1:3000';
+
+  // Local development endpoints - ArmorClaw standalone
+  private static readonly LOCAL_ARMORCLAW_IAP_ENDPOINT = 'http://127.0.0.1:8080';
+  private static readonly LOCAL_ARMORCLAW_PROXY_ENDPOINT = 'http://127.0.0.1:3001';
+  private static readonly LOCAL_ARMORCLAW_BACKEND_ENDPOINT = 'http://127.0.0.1:8081';
 
   private iapEndpoint: string;
   private defaultProxyEndpoint: string;
@@ -68,26 +78,33 @@ export class ArmorIQClient {
     // Determine if using production based on environment
     const envMode = process.env.ARMORIQ_ENV?.toLowerCase() || 'production';
     const useProd = (options.useProduction ?? true) && envMode === 'production';
-    //const envMode = process.env.ARMORIQ_ENV?.toLowerCase() || 'development';
-    //const useProd = (options.useProduction ?? false) || envMode === 'production';
 
-    // Load IAP endpoint
+    // Resolve API key early to determine product routing
+    const resolvedApiKey = options.apiKey || process.env.ARMORIQ_API_KEY || '';
+    const isArmorClaw = resolvedApiKey.startsWith('ak_claw_');
+
+    // Route endpoints based on API key prefix (Stripe pattern)
+    // ak_claw_ → ArmorClaw standalone, ak_live_ → ArmorIQ platform, ak_test_ → sandbox
     this.iapEndpoint =
       options.iapEndpoint ||
       process.env.IAP_ENDPOINT ||
-      (useProd ? ArmorIQClient.DEFAULT_IAP_ENDPOINT : ArmorIQClient.LOCAL_IAP_ENDPOINT);
+      (isArmorClaw
+        ? (useProd ? ArmorIQClient.ARMORCLAW_IAP_ENDPOINT : ArmorIQClient.LOCAL_ARMORCLAW_IAP_ENDPOINT)
+        : (useProd ? ArmorIQClient.DEFAULT_IAP_ENDPOINT : ArmorIQClient.LOCAL_IAP_ENDPOINT));
 
-    // Load proxy endpoint
     this.defaultProxyEndpoint =
       options.proxyEndpoint ||
       process.env.PROXY_ENDPOINT ||
-      (useProd ? ArmorIQClient.DEFAULT_PROXY_ENDPOINT : ArmorIQClient.LOCAL_PROXY_ENDPOINT);
+      (isArmorClaw
+        ? (useProd ? ArmorIQClient.ARMORCLAW_PROXY_ENDPOINT : ArmorIQClient.LOCAL_ARMORCLAW_PROXY_ENDPOINT)
+        : (useProd ? ArmorIQClient.DEFAULT_PROXY_ENDPOINT : ArmorIQClient.LOCAL_PROXY_ENDPOINT));
 
-    // Load backend endpoint
     this.backendEndpoint =
       options.backendEndpoint ||
       process.env.BACKEND_ENDPOINT ||
-      (useProd ? ArmorIQClient.DEFAULT_BACKEND_ENDPOINT : ArmorIQClient.LOCAL_BACKEND_ENDPOINT);
+      (isArmorClaw
+        ? (useProd ? ArmorIQClient.ARMORCLAW_BACKEND_ENDPOINT : ArmorIQClient.LOCAL_ARMORCLAW_BACKEND_ENDPOINT)
+        : (useProd ? ArmorIQClient.DEFAULT_BACKEND_ENDPOINT : ArmorIQClient.LOCAL_BACKEND_ENDPOINT));
 
     // Load user/agent identifiers
     this.userId = options.userId || process.env.USER_ID || '';
@@ -105,9 +122,9 @@ export class ArmorIQClient {
     }
 
     // Validate API key format
-    if (!this.apiKey.startsWith('ak_live_') && !this.apiKey.startsWith('ak_test_')) {
+    if (!this.apiKey.startsWith('ak_live_') && !this.apiKey.startsWith('ak_test_') && !this.apiKey.startsWith('ak_claw_')) {
       throw new ConfigurationException(
-        "Invalid API key format. API keys must start with 'ak_live_' or 'ak_test_'. " +
+        "Invalid API key format. API keys must start with 'ak_live_', 'ak_claw_', or 'ak_test_'. " +
           'Get your API key from https://platform.armoriq.ai/dashboard/api-keys'
       );
     }
