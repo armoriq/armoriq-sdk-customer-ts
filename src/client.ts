@@ -31,7 +31,7 @@ import {
 
 /**
  * Main client for ArmorIQ SDK.
- * 
+ *
  * Provides high-level APIs for:
  * - Plan capture and canonicalization
  * - Intent token management
@@ -40,9 +40,9 @@ import {
  */
 export class ArmorIQClient {
   // Production endpoints (default) - ArmorIQ platform
-  private static readonly DEFAULT_IAP_ENDPOINT = 'https://customer-iap.armoriq.ai';
-  private static readonly DEFAULT_PROXY_ENDPOINT = 'https://customer-proxy.armoriq.ai';
-  private static readonly DEFAULT_BACKEND_ENDPOINT = 'https://customer-api.armoriq.ai';
+  private static readonly DEFAULT_IAP_ENDPOINT = 'https://iap.armoriq.ai';
+  private static readonly DEFAULT_PROXY_ENDPOINT = 'https://proxy.armoriq.ai';
+  private static readonly DEFAULT_BACKEND_ENDPOINT = 'https://api.armoriq.ai';
 
   // ArmorClaw standalone product endpoints
   private static readonly ARMORCLAW_IAP_ENDPOINT = 'https://iap.armorclaw.io';
