@@ -44,10 +44,15 @@ export class ArmorIQClient {
   private static readonly DEFAULT_PROXY_ENDPOINT = 'https://proxy.armoriq.ai';
   private static readonly DEFAULT_BACKEND_ENDPOINT = 'https://api.armoriq.ai';
 
-  // ArmorClaw standalone product endpoints
-  private static readonly ARMORCLAW_IAP_ENDPOINT = 'https://iap.armorclaw.io';
-  private static readonly ARMORCLAW_PROXY_ENDPOINT = 'https://proxy.armorclaw.io';
-  private static readonly ARMORCLAW_BACKEND_ENDPOINT = 'https://api.armorclaw.io';
+  // ArmorClaw standalone product endpoints (used when API key starts with `ak_claw_`).
+  // Verified via GCP Cloud Run domain mappings (project=conmap-auto):
+  //   armorclaw-api.armoriq.ai   → armorclaw-backend (us-central1) — dedicated backend
+  //   customer-iap.armoriq.ai    → csrg-customer     (us-central1) — CSRG/IAP service
+  //   customer-proxy.armoriq.ai  → armoriq-proxy-customer (europe-west1) — proxy
+  // Previous values pointed at *.armorclaw.io which has no DNS/Cloud Run mapping.
+  private static readonly ARMORCLAW_IAP_ENDPOINT = 'https://customer-iap.armoriq.ai';
+  private static readonly ARMORCLAW_PROXY_ENDPOINT = 'https://customer-proxy.armoriq.ai';
+  private static readonly ARMORCLAW_BACKEND_ENDPOINT = 'https://armorclaw-api.armoriq.ai';
 
   // Local development endpoints - ArmorIQ platform
   private static readonly LOCAL_IAP_ENDPOINT = 'http://127.0.0.1:8000';
@@ -166,8 +171,23 @@ export class ArmorIQClient {
         `api_key=${'***' + this.apiKey.slice(-8)}`
     );
 
-    // Validate API key on initialization
-    this.validateApiKey();
+    // Validate API key on initialization.
+    //
+    // For ArmorClaw keys (`ak_claw_*`) the proxy is OPTIONAL — local-tool
+    // workflows never call the proxy at runtime (the verify-step + audit
+    // path goes plugin → IAP → backend, no proxy involvement). Skipping
+    // the boot ping eliminates a hard dependency on the proxy host being
+    // reachable for non-MCP deployments.
+    //
+    // The backend's `POST /iap/sdk/token` will reject invalid keys at first
+    // use anyway, so security isn't reduced — just deferred by ~1 turn.
+    if (this.apiKey.startsWith('ak_claw_')) {
+      console.log(
+        '⏭  API key validation skipped for ak_claw_* (proxy not required for local-tool flows)'
+      );
+    } else {
+      this.validateApiKey();
+    }
   }
 
   /**
