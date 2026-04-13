@@ -90,9 +90,9 @@ AGENT_ID=your-agent-id
 # Optional
 ARMORIQ_ENV=production  # or 'development' for local
 CONTEXT_ID=default
-IAP_ENDPOINT=https://customer-iap.armoriq.ai
-PROXY_ENDPOINT=https://customer-proxy.armoriq.ai
-BACKEND_ENDPOINT=https://customer-api.armoriq.ai
+IAP_ENDPOINT=https://iap.armoriq.ai
+PROXY_ENDPOINT=https://proxy.armoriq.ai
+BACKEND_ENDPOINT=https://api.armoriq.ai
 ```
 
 ---
