@@ -17,6 +17,8 @@ import {
   DelegationRequestResult,
   ApprovedDelegation,
   HoldInfo,
+  McpCredential,
+  McpCredentialMap,
 } from './models';
 import {
   InvalidTokenException,
@@ -40,9 +42,9 @@ import {
  */
 export class ArmorIQClient {
   // Production endpoints (default) - ArmorIQ platform
-  private static readonly DEFAULT_IAP_ENDPOINT = 'https://iap.armoriq.ai';
-  private static readonly DEFAULT_PROXY_ENDPOINT = 'https://proxy.armoriq.ai';
-  private static readonly DEFAULT_BACKEND_ENDPOINT = 'https://api.armoriq.ai';
+  private static readonly DEFAULT_IAP_ENDPOINT = 'https://iap.armoriq.io';
+  private static readonly DEFAULT_PROXY_ENDPOINT = 'https://cloud-run-proxy.armoriq.io';
+  private static readonly DEFAULT_BACKEND_ENDPOINT = 'https://staging-api.armoriq.io';
 
   // ArmorClaw standalone product endpoints
   private static readonly ARMORCLAW_IAP_ENDPOINT = 'https://iap.armorclaw.io';
@@ -73,6 +75,7 @@ export class ArmorIQClient {
   private httpClient: AxiosInstance;
   private tokenCache: Map<string, IntentToken>;
   private metadataCache: Map<string, MCPSemanticMetadata>;
+  private mcpCredentials: McpCredentialMap;
 
   constructor(options: Partial<SDKConfig> & { apiKey?: string; useProduction?: boolean } = {}) {
     // Determine if using production based on environment
@@ -143,7 +146,7 @@ export class ArmorIQClient {
 
     // Initialize HTTP client
     const headers: Record<string, string> = {
-      'User-Agent': `ArmorIQ-SDK-TS/0.2.6 (agent=${this.agentId})`,
+      'User-Agent': `ArmorIQ-SDK-TS/0.2.12 (agent=${this.agentId})`,
     };
     if (this.apiKey) {
       headers['Authorization'] = `Bearer ${this.apiKey}`;
@@ -157,6 +160,7 @@ export class ArmorIQClient {
 
     this.tokenCache = new Map();
     this.metadataCache = new Map();
+    this.mcpCredentials = ArmorIQClient.resolveMcpCredentials(options.mcpCredentials);
 
     console.log(
       `ArmorIQ SDK initialized: mode=${useProd ? 'production' : 'development'}, ` +
@@ -175,6 +179,103 @@ export class ArmorIQClient {
    */
   get proxyEndpoint(): string {
     return this.defaultProxyEndpoint;
+  }
+
+  /**
+   * Open a new session for one LLM turn / one plan. Use this with a
+   * framework integration (ADK, LangChain, etc.) to compress the
+   * capture-plan / mint-token / invoke-tool dance into two calls.
+   */
+  startSession(opts?: import('./session').SessionOptions): import('./session').ArmorIQSession {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const sessionMod = require('./session') as typeof import('./session');
+    return new sessionMod.ArmorIQSession(this, opts);
+  }
+
+  /**
+   * Resolve per-MCP credentials from env + constructor option.
+   *
+   * Precedence (later wins):
+   *   1. ARMORIQ_MCP_CREDENTIALS (JSON blob)
+   *   2. ARMORIQ_MCP_<SAFE_NAME>_* per-MCP env vars
+   *   3. constructor option `mcpCredentials`
+   *
+   * SAFE_NAME = mcpName.toUpperCase().replace(/[^A-Z0-9]/g, '_')
+   */
+  private static resolveMcpCredentials(fromOptions?: McpCredentialMap): McpCredentialMap {
+    const merged: McpCredentialMap = {};
+
+    // 1. JSON blob
+    const jsonRaw = process.env.ARMORIQ_MCP_CREDENTIALS;
+    if (jsonRaw) {
+      try {
+        const parsed = JSON.parse(jsonRaw);
+        if (parsed && typeof parsed === 'object') {
+          for (const [k, v] of Object.entries(parsed)) {
+            merged[k] = v as McpCredential;
+          }
+        }
+      } catch (e: any) {
+        console.warn(`Failed to parse ARMORIQ_MCP_CREDENTIALS as JSON: ${e?.message ?? e}`);
+      }
+    }
+
+    // 2. Per-MCP env vars
+    const safeNames = new Set<string>();
+    for (const key of Object.keys(process.env)) {
+      const m = key.match(/^ARMORIQ_MCP_(.+)_AUTH_TYPE$/);
+      if (m) safeNames.add(m[1]);
+    }
+    for (const safeName of safeNames) {
+      const authType = (process.env[`ARMORIQ_MCP_${safeName}_AUTH_TYPE`] || '').toLowerCase();
+      let cred: McpCredential | null = null;
+      if (authType === 'bearer') {
+        const token = process.env[`ARMORIQ_MCP_${safeName}_TOKEN`];
+        if (token) cred = { authType: 'bearer', token };
+      } else if (authType === 'api_key') {
+        const apiKey = process.env[`ARMORIQ_MCP_${safeName}_API_KEY`];
+        const headerName = process.env[`ARMORIQ_MCP_${safeName}_HEADER_NAME`];
+        if (apiKey) cred = { authType: 'api_key', apiKey, headerName };
+      } else if (authType === 'basic') {
+        const username = process.env[`ARMORIQ_MCP_${safeName}_USERNAME`];
+        const password = process.env[`ARMORIQ_MCP_${safeName}_PASSWORD`];
+        if (username && password) cred = { authType: 'basic', username, password };
+      } else if (authType === 'none') {
+        cred = { authType: 'none' };
+      }
+      if (cred) {
+        merged[safeName] = cred;
+      }
+    }
+
+    // 3. Constructor option (highest precedence)
+    if (fromOptions) {
+      for (const [k, v] of Object.entries(fromOptions)) {
+        merged[k] = v;
+      }
+    }
+
+    return merged;
+  }
+
+  /**
+   * Look up the runtime cred for a given MCP name.
+   * Tries the canonical name first, then the safe-name encoding so env-var
+   * users don't have to match the platform's exact casing/punctuation.
+   */
+  private getMcpCredential(mcpName: string): McpCredential | undefined {
+    if (this.mcpCredentials[mcpName]) return this.mcpCredentials[mcpName];
+    const safeName = mcpName.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+    return this.mcpCredentials[safeName];
+  }
+
+  /**
+   * Encode an MCP credential as the X-Armoriq-MCP-Auth header value.
+   * Base64 wrapping avoids header-character issues; not encryption — TLS
+   * handles confidentiality.
+   */
+  private encodeMcpAuthHeader(cred: McpCredential): string {
+    return Buffer.from(JSON.stringify(cred), 'utf8').toString('base64');
   }
 
   /**
@@ -426,6 +527,14 @@ export class ArmorIQClient {
 
     if (this.apiKey) {
       headers['X-API-Key'] = this.apiKey;
+    }
+
+    // Agent-managed upstream MCP cred (default path).
+    // Proxy parses, injects upstream auth header, and drops this one
+    // before forwarding. Armoriq does not store this value.
+    const mcpCred = this.getMcpCredential(mcp);
+    if (mcpCred) {
+      headers['X-Armoriq-MCP-Auth'] = this.encodeMcpAuthHeader(mcpCred);
     }
 
     // Send CSRG token structure
