@@ -43,8 +43,14 @@ let _BasePluginCache: AnyCtor | null = null;
 function loadBasePlugin(): AnyCtor {
   if (_BasePluginCache) return _BasePluginCache;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const adk = require('@google/adk');
+    // Try multiple resolution strategies. The SDK is a dependency of
+    // the consumer, so `require('@google/adk')` from here resolves in
+    // the SDK's own node_modules (where the package isn't installed).
+    // We use createRequire from the consumer's working directory so the
+    // lookup walks the consumer's node_modules tree instead.
+    const { createRequire } = require('module') as typeof import('module');
+    const consumerRequire = createRequire(process.cwd() + '/package.json');
+    const adk = consumerRequire('@google/adk');
     _BasePluginCache = adk.BasePlugin as AnyCtor;
     if (!_BasePluginCache) {
       throw new Error('@google/adk is installed but does not export BasePlugin.');
