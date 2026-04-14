@@ -166,8 +166,10 @@ function buildArmorIQADKClass(): AnyCtor {
     }
 
     /**
-     * Before each tool call: route through the Armoriq proxy and
-     * return the result so ADK skips its native dispatch.
+     * Before each tool call: enforce policy. If blocked, return an
+     * error object (short-circuits the tool). If allowed, return
+     * undefined so ADK calls the MCP directly — the agent's own
+     * MCPToolset handles the connection with its own credentials.
      */
     async beforeToolCallback(params: {
       tool: any;
@@ -180,14 +182,56 @@ function buildArmorIQADKClass(): AnyCtor {
         toolContext?.invocationId ??
         'default';
       const session = this.sessions.get(invocationId);
-      if (!session) return undefined; // no plan captured this turn
+      if (!session) return undefined;
 
-      const result = await session.dispatch(tool?.name ?? String(tool), toolArgs ?? {});
-      // ADK expects an object; wrap primitives.
-      if (result && typeof result === 'object' && !Array.isArray(result)) {
-        return result as Record<string, unknown>;
+      const toolName = tool?.name ?? String(tool);
+      const decision = await session.enforce(toolName, toolArgs ?? {});
+
+      if (!decision.allowed) {
+        // Return an error result to ADK — this short-circuits the tool
+        // so the MCP is never called. The LLM sees the block reason.
+        return {
+          error: `Blocked by ArmorIQ policy: ${decision.reason || decision.action}`,
+          enforcement: { action: decision.action, reason: decision.reason },
+        };
       }
-      return { result };
+
+      // Store start time for duration tracking in afterToolCallback
+      (toolContext as any).__armoriq_start = Date.now();
+      return undefined; // let ADK call the MCP directly
+    }
+
+    /**
+     * After each tool call: report execution to audit log.
+     * This fires AFTER the MCP returns its result — the agent called
+     * the MCP directly, and now we record what happened.
+     */
+    async afterToolCallback(params: {
+      tool: any;
+      toolArgs: Record<string, unknown>;
+      toolContext: any;
+      result: Record<string, unknown>;
+    }): Promise<Record<string, unknown> | undefined> {
+      const { tool, toolArgs, toolContext, result } = params;
+      const invocationId =
+        toolContext?.invocationContext?.invocationId ??
+        toolContext?.invocationId ??
+        'default';
+      const session = this.sessions.get(invocationId);
+      if (!session) return undefined;
+
+      const toolName = tool?.name ?? String(tool);
+      const startTime = (toolContext as any).__armoriq_start;
+      const durationMs = startTime ? Date.now() - startTime : undefined;
+
+      const hasError = result?.error || result?.isError;
+      await session.report(toolName, toolArgs ?? {}, result, {
+        status: hasError ? 'failed' : 'success',
+        errorMessage: hasError ? String(result.error || result.isError) : undefined,
+        durationMs,
+      });
+
+      return undefined; // don't modify the result
     }
 
     get armoriqSdk(): ArmorIQClient {
