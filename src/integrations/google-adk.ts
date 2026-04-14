@@ -95,7 +95,10 @@ function buildArmorIQADKClass(): AnyCtor {
 
   return class ArmorIQADKImpl extends BasePlugin {
     private armoriqClient: ArmorIQClient;
-    private sessions = new WeakMap<object, ArmorIQSession>();
+    // Keyed by invocationId (stable string) rather than object identity,
+    // because ADK's afterModelCallback and beforeToolCallback receive
+    // different Context object instances for the same invocation.
+    private sessions = new Map<string, ArmorIQSession>();
     private opts: ArmorIQADKOptions;
 
     constructor(opts: ArmorIQADKOptions) {
@@ -139,13 +142,26 @@ function buildArmorIQADKClass(): AnyCtor {
         validitySeconds: this.opts.validitySeconds,
       });
 
-      const goal: string =
+      // ADK's userContent is a Content object ({role, parts}), not a string.
+      const rawContent =
         callbackContext?.userContent ??
-        callbackContext?.invocationContext?.userContent ??
-        'agent task';
+        callbackContext?.invocationContext?.userContent;
+      let goal = 'agent task';
+      if (typeof rawContent === 'string') {
+        goal = rawContent;
+      } else if (rawContent?.parts) {
+        const texts = rawContent.parts
+          .filter((p: any) => typeof p?.text === 'string')
+          .map((p: any) => p.text);
+        if (texts.length > 0) goal = texts.join(' ');
+      }
 
       await session.startPlan(toolCalls, { goal });
-      this.sessions.set(callbackContext, session);
+      const invocationId =
+        callbackContext?.invocationContext?.invocationId ??
+        callbackContext?.invocationId ??
+        'default';
+      this.sessions.set(invocationId, session);
       return undefined; // do not modify the LLM response
     }
 
@@ -159,11 +175,11 @@ function buildArmorIQADKClass(): AnyCtor {
       toolContext: any;
     }): Promise<Record<string, unknown> | undefined> {
       const { tool, toolArgs, toolContext } = params;
-      const ctx =
-        toolContext?.callbackContext ??
-        toolContext?.invocationContext ??
-        toolContext;
-      const session = this.sessions.get(ctx);
+      const invocationId =
+        toolContext?.invocationContext?.invocationId ??
+        toolContext?.invocationId ??
+        'default';
+      const session = this.sessions.get(invocationId);
       if (!session) return undefined; // no plan captured this turn
 
       const result = await session.dispatch(tool?.name ?? String(tool), toolArgs ?? {});
