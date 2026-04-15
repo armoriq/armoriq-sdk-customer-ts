@@ -220,13 +220,6 @@ export class ArmorIQSession {
       governingEntry?.defaultEnforcementAction ||
       pv?.default_enforcement_action ||
       'block';
-    // For threshold violations on an allowed tool, the per-rule action
-    // applies (e.g. 'hold' to require approval for amounts > $50).
-    const conditionalAction =
-      governingRule?.enforcementAction ||
-      governingEntry?.defaultEnforcementAction ||
-      pv?.default_enforcement_action ||
-      'hold';
 
     // 3. denied_tools — explicit deny list from backend evaluation.
     //    Only treat as a deny IF we found a governing policy for this tool.
@@ -287,24 +280,19 @@ export class ArmorIQSession {
       }
     }
 
-    // 5. Threshold checks on the governing rule (e.g. amount limits)
+    // 5. Threshold checks on the governing rule (e.g. amount limits).
+    //    Uses tool metadata declared on the platform (amountFields +
+    //    amountUnit, set in armorpay's tool-metadata UI) — NO MCP-
+    //    specific knowledge in the SDK itself.
     if (governingRule) {
-      const fin =
-        governingRule.financialRule?.amountThreshold ??
-        governingRule.amountThreshold;
-      if (fin && typeof fin === 'object') {
-        for (const [field, threshold] of Object.entries(fin)) {
-          if (typeof threshold !== 'number') continue;
-          const argVal = Number((toolArgs as any)?.[field]);
-          if (!isNaN(argVal) && argVal > Number(threshold)) {
-            return {
-              allowed: false,
-              action: conditionalAction === 'block' ? 'block' : 'hold',
-              reason: `Amount ${argVal} exceeds threshold ${threshold} for field '${field}'`,
-              matchedPolicy: governingPolicyName,
-            };
-          }
-        }
+      const decision = await this.evaluateAmountThreshold(
+        governingRule,
+        toolArgs,
+        action,
+        mcp,
+      );
+      if (decision) {
+        return { ...decision, matchedPolicy: governingPolicyName };
       }
     }
 
@@ -596,13 +584,87 @@ export class ArmorIQSession {
     };
   }
 
-  /** Best-effort extraction of an amount field from arbitrary tool args. */
+  /**
+   * Best-effort extraction of an amount field from arbitrary tool args.
+   * Used as a FALLBACK when the platform hasn't declared per-tool
+   * metadata. Fully MCP-agnostic — only checks generic field names.
+   */
   private extractAmount(args: Record<string, unknown>): number | undefined {
     if (!args || typeof args !== 'object') return undefined;
-    const candidates = ['amount', 'unit_amount', 'value', 'total', 'price', 'cost'];
+    const candidates = ['amount', 'value', 'total', 'price', 'cost'];
     for (const k of candidates) {
       const v = (args as any)[k];
       if (v != null && !isNaN(Number(v))) return Number(v);
+    }
+    return undefined;
+  }
+
+  /**
+   * Resolve the canonical "amount" for a tool call:
+   *   1. Try platform-declared tool metadata (amountFields + amountUnit)
+   *      — same source the proxy uses (toolMetadata column on MCPServer,
+   *      authored in the armorpay UI). MCP-specific units like 'cents'
+   *      are normalized HERE, not in the SDK.
+   *   2. Fall back to the generic candidate-field extractor.
+   */
+  private async resolveCanonicalAmount(
+    mcp: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<number | undefined> {
+    try {
+      const meta = await this.client.fetchToolMetadata(mcp);
+      const toolMeta = meta?.toolMetadata?.[toolName];
+      if (toolMeta?.amountFields?.length) {
+        for (const field of toolMeta.amountFields) {
+          const raw = (args as any)?.[field];
+          if (raw == null || isNaN(Number(raw))) continue;
+          const num = Number(raw);
+          return toolMeta.amountUnit === 'cents' ? num / 100 : num;
+        }
+      }
+    } catch {
+      // metadata fetch failed — fall through to generic extraction
+    }
+    return this.extractAmount(args);
+  }
+
+  /**
+   * Evaluate an amount-threshold rule from the policy snapshot against
+   * the tool args. Returns:
+   *   - undefined if no threshold or amount-not-applicable
+   *   - { allowed: false, action: 'block' } if amount > maxPerTransaction
+   *   - { allowed: false, action: 'hold'  } if amount > requireApprovalAbove
+   */
+  private async evaluateAmountThreshold(
+    rule: any,
+    toolArgs: Record<string, unknown>,
+    action: string,
+    mcp: string,
+  ): Promise<{ allowed: false; action: 'block' | 'hold'; reason: string } | undefined> {
+    const fin = rule?.financialRule?.amountThreshold ?? rule?.amountThreshold;
+    if (!fin || typeof fin !== 'object') return undefined;
+
+    const amount = await this.resolveCanonicalAmount(mcp, action, toolArgs);
+    if (amount === undefined) return undefined;
+
+    const currency = (fin as any).currency || '';
+    const maxPer = (fin as any).maxPerTransaction;
+    const reqApproval = (fin as any).requireApprovalAbove;
+
+    if (typeof maxPer === 'number' && amount > maxPer) {
+      return {
+        allowed: false,
+        action: 'block',
+        reason: `Amount ${amount} ${currency} exceeds maxPerTransaction (${maxPer})`.trim(),
+      };
+    }
+    if (typeof reqApproval === 'number' && amount > reqApproval) {
+      return {
+        allowed: false,
+        action: 'hold',
+        reason: `Amount ${amount} ${currency} requires approval (threshold: ${reqApproval})`.trim(),
+      };
     }
     return undefined;
   }
