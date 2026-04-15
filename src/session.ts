@@ -131,18 +131,23 @@ export class ArmorIQSession {
     const resolvedMcp = this.mcpByAction.get(action) ?? mcp;
 
     try {
-      const backendEndpoint = (this.client as any).backendEndpoint;
+      const proxyEndpoint = (this.client as any).defaultProxyEndpoint;
       const apiKey = (this.client as any).apiKey;
 
       const response = await axios.post(
-        `${backendEndpoint}/iap/enforce`,
+        `${proxyEndpoint}/invoke`,
         {
-          token: this.currentTokenValue.jwtToken || this.currentTokenValue.tokenId,
-          plan_id: this.currentTokenValue.planId || this.currentTokenValue.tokenId,
-          tool: action,
+          enforce_only: true,
           mcp: resolvedMcp,
+          tool: action,
+          action,
+          params: toolArgs,
           arguments: toolArgs,
-          step_index: this.stepIndex,
+          intent_token: this.currentTokenValue.rawToken,
+          plan: this.currentTokenValue.rawToken?.plan,
+          ...(this.currentTokenValue.policySnapshot
+            ? { policy_snapshot: this.currentTokenValue.policySnapshot }
+            : {}),
         },
         {
           headers: {
