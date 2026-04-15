@@ -193,15 +193,65 @@ function buildArmorIQADKClass(): AnyCtor {
       if (!session) return undefined;
 
       const toolName = tool?.name ?? String(tool);
-      // session.check() picks local vs proxy based on session.mode.
-      const decision = await session.check(toolName, toolArgs ?? {});
+      // Pull user email if present (set by ADK runner for the request).
+      const userEmail =
+        toolContext?.userEmail ??
+        toolContext?.invocationContext?.userEmail ??
+        toolContext?.invocationContext?.userId;
+      // session.check() picks local vs proxy based on session.mode and
+      // handles the delegation flow on a 'hold' decision.
+      const decision = await session.check(toolName, toolArgs ?? {}, { userEmail });
 
       if (!decision.allowed) {
-        // Return an error result to ADK — this short-circuits the tool
-        // so the MCP is never called. The LLM sees the block reason.
+        // Mark this tool call as blocked so afterToolCallback skips
+        // its success-path audit and writes a 'failed' record instead.
+        (toolContext as any).__armoriq_blocked = decision;
+
+        // Report the block to the audit log NOW (before short-circuit)
+        // so AIGraph reflects the correct status.
+        try {
+          await session.report(toolName, toolArgs ?? {}, {
+            blocked: true,
+            reason: decision.reason,
+            action: decision.action,
+            delegationId: decision.delegationId,
+          }, {
+            status: 'failed',
+            errorMessage: decision.reason || `Blocked by policy (${decision.action})`,
+          });
+        } catch {
+          // never fail the request because audit failed
+        }
+
+        // Return a clear, structured message that the LLM can interpret
+        // and surface to the user verbatim.
+        const policy = decision.matchedPolicy ? ` (policy: ${decision.matchedPolicy})` : '';
+        let userMessage: string;
+        if (decision.action === 'hold' && decision.delegationId) {
+          userMessage =
+            `This action requires approval${policy}. ` +
+            `An approval request has been sent (id: ${decision.delegationId}). ` +
+            `Once approved, please re-run this request to proceed. ` +
+            `Reason: ${decision.reason ?? 'policy-hold'}.`;
+        } else if (decision.action === 'hold') {
+          userMessage =
+            `This action requires approval before it can run${policy}. ` +
+            `Reason: ${decision.reason ?? 'policy-hold'}.`;
+        } else {
+          userMessage =
+            `This action is not permitted by your organization's policy${policy}. ` +
+            `Reason: ${decision.reason ?? 'policy-blocked'}.`;
+        }
         return {
-          error: `Blocked by ArmorIQ policy: ${decision.reason || decision.action}`,
-          enforcement: { action: decision.action, reason: decision.reason },
+          error: userMessage,
+          armoriq_enforcement: {
+            blocked: true,
+            action: decision.action,
+            reason: decision.reason,
+            matchedPolicy: decision.matchedPolicy,
+            tool: toolName,
+            delegationId: decision.delegationId,
+          },
         };
       }
 
@@ -229,6 +279,12 @@ function buildArmorIQADKClass(): AnyCtor {
       const session = this.sessions.get(invocationId);
       if (!session) return undefined;
 
+      // If beforeToolCallback already blocked this call, the audit was
+      // written there. Don't double-audit.
+      if ((toolContext as any).__armoriq_blocked) {
+        return undefined;
+      }
+
       const toolName = tool?.name ?? String(tool);
       const startTime = (toolContext as any).__armoriq_start;
       const durationMs = startTime ? Date.now() - startTime : undefined;
@@ -240,7 +296,7 @@ function buildArmorIQADKClass(): AnyCtor {
         durationMs,
       });
 
-      return undefined; // don't modify the result
+      return undefined;
     }
 
     get armoriqSdk(): ArmorIQClient {

@@ -182,10 +182,39 @@ export class ArmorIQSession {
       };
     }
 
-    // 3. allowed_tools list from the JWT's policy_validation
-    const allowedTools: string[] | undefined =
-      this.currentTokenValue.policyValidation?.allowed_tools;
-    if (Array.isArray(allowedTools) && allowedTools.length > 0) {
+    const pv = this.currentTokenValue.policyValidation;
+    const matchedPolicyName = pv?.matched_policies?.[0]?.name;
+    const defaultAction =
+      pv?.default_enforcement_action ||
+      pv?.matched_policies?.[0]?.default_enforcement_action ||
+      'block';
+
+    // 3. denied_tools (explicit deny list from backend evaluation)
+    const deniedTools: string[] | undefined = pv?.denied_tools;
+    if (Array.isArray(deniedTools)) {
+      const denied =
+        deniedTools.includes(toolName) || deniedTools.includes(action);
+      if (denied) {
+        const reason =
+          pv?.denied_reasons?.find((r: string) =>
+            r.startsWith(`${action}:`) || r.startsWith(`${toolName}:`),
+          ) || `Tool '${action}' is denied by policy '${matchedPolicyName ?? 'unknown'}'`;
+        return {
+          allowed: false,
+          action: defaultAction === 'hold' ? 'hold' : 'block',
+          reason,
+          matchedPolicy: matchedPolicyName,
+        };
+      }
+    }
+
+    // 4. allowed_tools (explicit allow list — must include this tool)
+    // The backend returns allowed_tools as the subset of REQUESTED tools
+    // that the policy allows. If our tool isn't in there AND there are
+    // matched policies, treat it as a deny.
+    const allowedTools: string[] | undefined = pv?.allowed_tools;
+    const hasMatchedPolicies = (pv?.matched_policies?.length ?? 0) > 0;
+    if (Array.isArray(allowedTools) && hasMatchedPolicies) {
       const wildcard = allowedTools.includes('*');
       const ok =
         wildcard ||
@@ -194,47 +223,64 @@ export class ArmorIQSession {
       if (!ok) {
         return {
           allowed: false,
-          action: 'block',
-          reason: `Tool '${action}' is not in the policy's allowed_tools`,
-          matchedPolicy: this.currentTokenValue.policyValidation?.matched_policies?.[0]?.name,
+          action: defaultAction === 'hold' ? 'hold' : 'block',
+          reason: `Tool '${action}' is not in the allowed tools for policy '${matchedPolicyName ?? 'unknown'}'`,
+          matchedPolicy: matchedPolicyName,
         };
       }
     }
 
-    // 4. Local policy snapshot evaluation (financial thresholds, etc.)
+    // 5. Policy snapshot — walk the OPA-formatted rules for thresholds
+    //    Snapshot shape (per iap-policy-decision.service.ts:582-596):
+    //      { policyId, policyName, memberRule: { allowedTools, ... }, clientRule: ... }
     const snapshot = this.currentTokenValue.policySnapshot;
     if (Array.isArray(snapshot)) {
       for (const entry of snapshot) {
-        const rules = (entry as any)?.rules ?? entry;
-        const memberRules =
-          rules?.memberRules ?? (rules as any)?.['*'] ?? rules;
-        const allowed: string[] | undefined = memberRules?.allowedTools;
-        if (Array.isArray(allowed) && allowed.length > 0) {
-          const wildcard = allowed.includes('*');
-          const ok = wildcard || allowed.includes(action);
+        const rule =
+          (entry as any)?.memberRule ??
+          (entry as any)?.clientRule ??
+          (entry as any)?.rules ??
+          (entry as any)?.memberRules?.['*'] ??
+          entry;
+        if (!rule) continue;
+
+        // 5a. Snapshot allowedTools — same logic as #4 but per-policy
+        const ruleAllowed: string[] | undefined = rule.allowedTools;
+        if (Array.isArray(ruleAllowed) && ruleAllowed.length > 0) {
+          const wildcard = ruleAllowed.includes('*');
+          const ok = wildcard || ruleAllowed.includes(action);
           if (!ok) {
+            const enforcementAction =
+              rule.enforcementAction ||
+              (entry as any)?.defaultEnforcementAction ||
+              defaultAction;
             return {
               allowed: false,
-              action: 'block',
-              reason: `Tool '${action}' not in policy snapshot allowedTools`,
+              action: enforcementAction === 'hold' ? 'hold' : 'block',
+              reason: `Tool '${action}' not allowed by policy '${(entry as any)?.policyName ?? 'unknown'}'`,
+              matchedPolicy: (entry as any)?.policyName,
             };
           }
         }
-        // Amount-threshold check
-        const fin = memberRules?.financialRule?.amountThreshold;
+
+        // 5b. Amount-threshold check
+        const fin = rule.financialRule?.amountThreshold ?? rule.amountThreshold;
         if (fin && typeof fin === 'object') {
+          // Common field names: amount, value, total, etc. Walk the args.
           for (const [field, threshold] of Object.entries(fin)) {
+            // Skip non-numeric meta fields
+            if (typeof threshold !== 'number') continue;
             const argVal = Number((toolArgs as any)?.[field]);
             if (!isNaN(argVal) && argVal > Number(threshold)) {
               const enforcementAction =
-                memberRules?.enforcementAction ||
+                rule.enforcementAction ||
                 (entry as any)?.defaultEnforcementAction ||
                 'hold';
               return {
                 allowed: false,
-                action:
-                  enforcementAction === 'block' ? 'block' : 'hold',
-                reason: `Amount ${argVal} exceeds threshold ${threshold} for field ${field}`,
+                action: enforcementAction === 'block' ? 'block' : 'hold',
+                reason: `Amount ${argVal} exceeds threshold ${threshold} for field '${field}'`,
+                matchedPolicy: (entry as any)?.policyName,
               };
             }
           }
@@ -246,6 +292,7 @@ export class ArmorIQSession {
       allowed: true,
       action: 'allow',
       reason: 'Allowed by local policy evaluation',
+      matchedPolicy: matchedPolicyName,
     };
   }
 
@@ -417,14 +464,127 @@ export class ArmorIQSession {
   /**
    * Mode-aware enforcement entry point. Plugins should call this and
    * not branch themselves — `mode` on the session decides the path.
+   *
+   * On a 'hold' decision in local mode, this also handles the
+   * "Option B" delegation flow:
+   *   1. First time the tool is seen → create delegation request,
+   *      return block decision with delegationId (UI shows approval card)
+   *   2. Subsequent attempts (next user prompt / re-plan) → check if the
+   *      delegation was approved; if yes, allow; if rejected, block;
+   *      if still pending, return hold again.
+   *
+   * Approvals expire by default after 30 minutes (configurable on the
+   * platform per delegation request). The plugin should re-prompt the
+   * user after this window.
    */
   async check(
     toolName: string,
     toolArgs: Record<string, unknown>,
+    opts: { userEmail?: string } = {},
   ): Promise<EnforceResult> {
-    return this.mode === 'proxy'
-      ? this.enforce(toolName, toolArgs)
-      : this.enforceLocal(toolName, toolArgs);
+    const decision =
+      this.mode === 'proxy'
+        ? await this.enforce(toolName, toolArgs)
+        : await this.enforceLocal(toolName, toolArgs);
+
+    // Plain allow / block — return as-is
+    if (decision.action !== 'hold') return decision;
+
+    // 'hold' decision → run the delegation flow (Option B async).
+    return this.handleHold(toolName, toolArgs, decision, opts);
+  }
+
+  /**
+   * Handle a 'hold' decision: check for prior approval, otherwise
+   * create a delegation request. Returns either:
+   *   - allowed: true (prior approval found within window)
+   *   - allowed: false, action: 'hold', delegationId (request created or pending)
+   */
+  private async handleHold(
+    toolName: string,
+    toolArgs: Record<string, unknown>,
+    holdDecision: EnforceResult,
+    opts: { userEmail?: string } = {},
+  ): Promise<EnforceResult> {
+    const userEmail =
+      opts.userEmail ||
+      (this.client as any).userId ||
+      'unknown@armoriq';
+    const { mcp, action } = this.toolNameParser(toolName);
+    const resolvedMcp = this.mcpByAction.get(action) ?? mcp;
+
+    // 1. Check if there's already an approved delegation for this
+    //    (user, tool, amount) within the approval window.
+    const amount = this.extractAmount(toolArgs);
+    try {
+      const approved = await this.client.checkApprovedDelegation(
+        userEmail,
+        action,
+        amount ?? 0,
+      );
+      if (approved && (approved as any).approved !== false) {
+        // Mark used so a single approval = single execution
+        try {
+          if ((approved as any).delegationId) {
+            await this.client.markDelegationExecuted(
+              userEmail,
+              (approved as any).delegationId,
+            );
+          }
+        } catch {
+          // best-effort
+        }
+        return {
+          allowed: true,
+          action: 'allow',
+          reason: `Allowed by approved delegation ${(approved as any).delegationId ?? ''}`.trim(),
+          delegationId: (approved as any).delegationId,
+          matchedPolicy: holdDecision.matchedPolicy,
+        };
+      }
+    } catch {
+      // backend unreachable — fall through to creating a new request
+    }
+
+    // 2. No prior approval → create a delegation request (visible in UI).
+    let delegationId: string | undefined;
+    try {
+      const result = await this.client.createDelegationRequest({
+        tool: action,
+        action,
+        arguments: toolArgs,
+        amount,
+        requesterEmail: userEmail,
+        domain: resolvedMcp,
+        planId: this.currentTokenValue?.planId,
+        intentReference: this.currentTokenValue?.tokenId,
+        merkleRoot: (this.currentTokenValue as any)?.rawToken?.merkle_root,
+        reason: holdDecision.reason,
+      });
+      delegationId = (result as any)?.delegationId;
+    } catch (err: any) {
+      // If we can't create the request, still return the original block.
+      console.warn(`[ArmorIQ] createDelegationRequest failed: ${err.message}`);
+    }
+
+    return {
+      allowed: false,
+      action: 'hold',
+      reason: holdDecision.reason ?? 'Pending approval',
+      delegationId,
+      matchedPolicy: holdDecision.matchedPolicy,
+    };
+  }
+
+  /** Best-effort extraction of an amount field from arbitrary tool args. */
+  private extractAmount(args: Record<string, unknown>): number | undefined {
+    if (!args || typeof args !== 'object') return undefined;
+    const candidates = ['amount', 'value', 'total', 'price', 'cost'];
+    for (const k of candidates) {
+      const v = (args as any)[k];
+      if (v != null && !isNaN(Number(v))) return Number(v);
+    }
+    return undefined;
   }
 
   /** Drop cached plan + token so the next startPlan() always mints fresh. */
