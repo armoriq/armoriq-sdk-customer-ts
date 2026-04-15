@@ -183,7 +183,9 @@ export class ArmorIQSession {
     }
 
     const pv = this.currentTokenValue.policyValidation;
-    const matchedPolicyName = pv?.matched_policies?.[0]?.name;
+    const matchedPolicyName =
+      pv?.matched_policies?.[0]?.policyName ||
+      pv?.matched_policies?.[0]?.name;
     const defaultAction =
       pv?.default_enforcement_action ||
       pv?.matched_policies?.[0]?.default_enforcement_action ||
