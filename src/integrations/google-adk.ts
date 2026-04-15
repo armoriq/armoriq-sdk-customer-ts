@@ -31,7 +31,7 @@
  */
 
 import { ArmorIQClient } from '../client';
-import { ArmorIQSession } from '../session';
+import { ArmorIQSession, SessionMode } from '../session';
 import { McpCredentialMap, ToolCall } from '../models';
 import { ToolNameParser } from '../plan-builder';
 
@@ -84,6 +84,13 @@ export interface ArmorIQADKOptions {
   validitySeconds?: number;
   /** Plugin name for ADK's plugin registry (default 'armoriq'). */
   pluginName?: string;
+  /**
+   * Where the policy decision is evaluated.
+   *  - 'local' (default): SDK verifies the intent token + evaluates
+   *    policy in-process. NO proxy in the data path.
+   *  - 'proxy': SDK calls the proxy with enforce_only=true.
+   */
+  mode?: SessionMode;
 }
 
 /**
@@ -140,6 +147,7 @@ function buildArmorIQADKClass(): AnyCtor {
         toolNameParser: this.opts.toolNameParser,
         llm: this.opts.llm,
         validitySeconds: this.opts.validitySeconds,
+        mode: this.opts.mode ?? 'local',
       });
 
       // ADK's userContent is a Content object ({role, parts}), not a string.
@@ -185,7 +193,8 @@ function buildArmorIQADKClass(): AnyCtor {
       if (!session) return undefined;
 
       const toolName = tool?.name ?? String(tool);
-      const decision = await session.enforce(toolName, toolArgs ?? {});
+      // session.check() picks local vs proxy based on session.mode.
+      const decision = await session.check(toolName, toolArgs ?? {});
 
       if (!decision.allowed) {
         // Return an error result to ADK — this short-circuits the tool

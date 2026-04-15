@@ -10,7 +10,7 @@
  */
 
 export { ArmorIQClient } from './client';
-export { ArmorIQSession, SessionOptions, EnforceResult, ReportOptions } from './session';
+export { ArmorIQSession, SessionOptions, SessionMode, EnforceResult, ReportOptions } from './session';
 export {
   buildPlanFromToolCalls,
   defaultToolNameParser,

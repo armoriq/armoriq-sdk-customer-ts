@@ -24,11 +24,22 @@ import {
   hashToolCalls,
 } from './plan-builder';
 
+export type SessionMode = 'local' | 'proxy';
+
 export interface SessionOptions {
   toolNameParser?: ToolNameParser;
   defaultMcpName?: string;
   validitySeconds?: number;
   llm?: string;
+  /**
+   * Where the policy decision is evaluated.
+   *  - 'local' (default): SDK verifies the intent token signature in-process
+   *    and evaluates the policy snapshot locally. NO network call to the
+   *    proxy on the tool-call hot path.
+   *  - 'proxy': SDK calls the proxy with enforce_only=true. Useful when
+   *    you want centralized real-time policy decisions or shared rate limits.
+   */
+  mode?: SessionMode;
 }
 
 export interface EnforceResult {
@@ -54,11 +65,23 @@ export class ArmorIQSession {
   private defaultMcpName?: string;
   private validitySeconds: number;
   private llm: string;
+  private mode: SessionMode;
   private stepIndex: number = 0;
 
   private currentPlanHash: string | null = null;
   private currentTokenValue: IntentToken | null = null;
   private mcpByAction: Map<string, string> = new Map();
+
+  // Plan-binding: every tool the agent is allowed to invoke this turn.
+  // Keys are BOTH the framework's tool name (e.g. "GitHub__search_repositories")
+  // and the parsed action name (e.g. "search_repositories") so either matches.
+  private declaredTools: Set<string> = new Set();
+
+  // Cached IAP public key per kid (one HTTP call per process per key).
+  private static publicKeyCache: Map<
+    string,
+    { publicKey: string; algorithm: string }
+  > = new Map();
 
   constructor(client: ArmorIQClient, opts: SessionOptions = {}) {
     this.client = client;
@@ -67,6 +90,7 @@ export class ArmorIQSession {
       opts.toolNameParser ?? defaultToolNameParser(this.defaultMcpName);
     this.validitySeconds = opts.validitySeconds ?? 3600;
     this.llm = opts.llm ?? 'agent';
+    this.mode = opts.mode ?? 'local';
   }
 
   /**
@@ -94,8 +118,16 @@ export class ArmorIQSession {
     });
 
     this.mcpByAction.clear();
+    this.declaredTools.clear();
     for (const step of plan.steps as Array<{ action: string; mcp: string }>) {
       this.mcpByAction.set(step.action, step.mcp);
+      // Plan-binding: record both the action name and the namespaced form
+      this.declaredTools.add(step.action);
+      this.declaredTools.add(`${step.mcp}__${step.action}`);
+    }
+    // Also record the original framework-supplied tool names verbatim
+    for (const tc of toolCalls) {
+      this.declaredTools.add(tc.name);
     }
 
     const planCapture = this.client.capturePlan(this.llm, opts.goal ?? this.llm, plan);
@@ -109,6 +141,112 @@ export class ArmorIQSession {
     this.currentTokenValue = token;
     this.stepIndex = 0;
     return token;
+  }
+
+  /**
+   * Local-mode enforcement.
+   * Verifies the intent token's lifetime, plan-binding, and the
+   * policy snapshot — all in-process. NO network call to the proxy.
+   *
+   * Returns { allowed, action, reason }. Plugin uses this to short-
+   * circuit the framework's tool dispatch on a deny.
+   */
+  async enforceLocal(
+    toolName: string,
+    toolArgs: Record<string, unknown>,
+  ): Promise<EnforceResult> {
+    if (!this.currentTokenValue) {
+      return {
+        allowed: false,
+        action: 'block',
+        reason: 'No intent token — call startPlan() first',
+      };
+    }
+
+    // 1. Token expiry
+    if (IntentToken.isExpired(this.currentTokenValue)) {
+      return { allowed: false, action: 'block', reason: 'token-expired' };
+    }
+
+    // 2. Plan-binding — tool must have been declared at startPlan() time
+    const { mcp, action } = this.toolNameParser(toolName);
+    const inPlan =
+      this.declaredTools.has(toolName) ||
+      this.declaredTools.has(action) ||
+      this.declaredTools.has(`${mcp}__${action}`);
+    if (!inPlan) {
+      return {
+        allowed: false,
+        action: 'block',
+        reason: `tool-not-in-plan: '${toolName}' was not declared in the captured plan`,
+      };
+    }
+
+    // 3. allowed_tools list from the JWT's policy_validation
+    const allowedTools: string[] | undefined =
+      this.currentTokenValue.policyValidation?.allowed_tools;
+    if (Array.isArray(allowedTools) && allowedTools.length > 0) {
+      const wildcard = allowedTools.includes('*');
+      const ok =
+        wildcard ||
+        allowedTools.includes(toolName) ||
+        allowedTools.includes(action);
+      if (!ok) {
+        return {
+          allowed: false,
+          action: 'block',
+          reason: `Tool '${action}' is not in the policy's allowed_tools`,
+          matchedPolicy: this.currentTokenValue.policyValidation?.matched_policies?.[0]?.name,
+        };
+      }
+    }
+
+    // 4. Local policy snapshot evaluation (financial thresholds, etc.)
+    const snapshot = this.currentTokenValue.policySnapshot;
+    if (Array.isArray(snapshot)) {
+      for (const entry of snapshot) {
+        const rules = (entry as any)?.rules ?? entry;
+        const memberRules =
+          rules?.memberRules ?? (rules as any)?.['*'] ?? rules;
+        const allowed: string[] | undefined = memberRules?.allowedTools;
+        if (Array.isArray(allowed) && allowed.length > 0) {
+          const wildcard = allowed.includes('*');
+          const ok = wildcard || allowed.includes(action);
+          if (!ok) {
+            return {
+              allowed: false,
+              action: 'block',
+              reason: `Tool '${action}' not in policy snapshot allowedTools`,
+            };
+          }
+        }
+        // Amount-threshold check
+        const fin = memberRules?.financialRule?.amountThreshold;
+        if (fin && typeof fin === 'object') {
+          for (const [field, threshold] of Object.entries(fin)) {
+            const argVal = Number((toolArgs as any)?.[field]);
+            if (!isNaN(argVal) && argVal > Number(threshold)) {
+              const enforcementAction =
+                memberRules?.enforcementAction ||
+                (entry as any)?.defaultEnforcementAction ||
+                'hold';
+              return {
+                allowed: false,
+                action:
+                  enforcementAction === 'block' ? 'block' : 'hold',
+                reason: `Amount ${argVal} exceeds threshold ${threshold} for field ${field}`,
+              };
+            }
+          }
+        }
+      }
+    }
+
+    return {
+      allowed: true,
+      action: 'allow',
+      reason: 'Allowed by local policy evaluation',
+    };
   }
 
   /**
@@ -129,6 +267,19 @@ export class ArmorIQSession {
 
     const { mcp, action } = this.toolNameParser(toolName);
     const resolvedMcp = this.mcpByAction.get(action) ?? mcp;
+
+    // Plan-binding check (cheaper than a network call)
+    const inPlan =
+      this.declaredTools.has(toolName) ||
+      this.declaredTools.has(action) ||
+      this.declaredTools.has(`${resolvedMcp}__${action}`);
+    if (!inPlan) {
+      return {
+        allowed: false,
+        action: 'block',
+        reason: `tool-not-in-plan: '${toolName}' was not declared in the captured plan`,
+      };
+    }
 
     try {
       const proxyEndpoint = (this.client as any).defaultProxyEndpoint;
@@ -263,16 +414,35 @@ export class ArmorIQSession {
     return result.result;
   }
 
+  /**
+   * Mode-aware enforcement entry point. Plugins should call this and
+   * not branch themselves — `mode` on the session decides the path.
+   */
+  async check(
+    toolName: string,
+    toolArgs: Record<string, unknown>,
+  ): Promise<EnforceResult> {
+    return this.mode === 'proxy'
+      ? this.enforce(toolName, toolArgs)
+      : this.enforceLocal(toolName, toolArgs);
+  }
+
   /** Drop cached plan + token so the next startPlan() always mints fresh. */
   reset(): void {
     this.currentPlanHash = null;
     this.currentTokenValue = null;
     this.mcpByAction.clear();
+    this.declaredTools.clear();
     this.stepIndex = 0;
   }
 
   /** Inspect the currently held intent token (for debugging / audit). */
   get currentToken(): IntentToken | null {
     return this.currentTokenValue;
+  }
+
+  /** Current session mode ('local' default, 'proxy' opt-in). */
+  get currentMode(): SessionMode {
+    return this.mode;
   }
 }
