@@ -599,7 +599,7 @@ export class ArmorIQSession {
   /** Best-effort extraction of an amount field from arbitrary tool args. */
   private extractAmount(args: Record<string, unknown>): number | undefined {
     if (!args || typeof args !== 'object') return undefined;
-    const candidates = ['amount', 'value', 'total', 'price', 'cost'];
+    const candidates = ['amount', 'unit_amount', 'value', 'total', 'price', 'cost'];
     for (const k of candidates) {
       const v = (args as any)[k];
       if (v != null && !isNaN(Number(v))) return Number(v);
