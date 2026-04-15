@@ -255,6 +255,34 @@ export interface ApprovedDelegation {
 }
 
 /**
+ * A single tool call as surfaced by an LLM framework (ADK, LangChain,
+ * OpenAI Agents, Vercel AI SDK, etc.). Used by ArmorIQSession to capture
+ * a plan without making the caller hand-build the SDK plan shape.
+ */
+export interface ToolCall {
+  name: string;
+  args: Record<string, unknown>;
+}
+
+/**
+ * Credential for an upstream MCP. Forwarded per-call to the proxy via
+ * the X-Armoriq-MCP-Auth header. The proxy injects the appropriate
+ * upstream auth header and drops this one before forwarding. Armoriq
+ * does NOT store these.
+ */
+export type McpCredential =
+  | { authType: 'bearer'; token: string }
+  | { authType: 'api_key'; apiKey: string; headerName?: string }
+  | { authType: 'basic'; username: string; password: string }
+  | { authType: 'none' };
+
+/**
+ * Map of MCP identifier (the name registered on the platform) to its
+ * runtime credential.
+ */
+export type McpCredentialMap = Record<string, McpCredential>;
+
+/**
  * SDK configuration.
  */
 export interface SDKConfig {
@@ -282,4 +310,6 @@ export interface SDKConfig {
   apiKey?: string;
   /** Use production endpoints */
   useProduction: boolean;
+  /** Per-MCP runtime credentials (agent-managed cred path) */
+  mcpCredentials?: McpCredentialMap;
 }

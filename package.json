@@ -1,9 +1,39 @@
 {
-  "name": "@armoriq/sdk",
-  "version": "0.2.9",
+  "name": "@armoriq/sdk-dev",
+  "version": "0.2.12",
   "description": "ArmorIQ SDK - Build secure AI agents with cryptographic intent verification.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./integrations": {
+      "types": "./dist/integrations/index.d.ts",
+      "default": "./dist/integrations/index.js"
+    },
+    "./integrations/google-adk": {
+      "types": "./dist/integrations/google-adk.d.ts",
+      "default": "./dist/integrations/google-adk.js"
+    },
+    "./integrations/crewai": {
+      "types": "./dist/integrations/crewai.d.ts",
+      "default": "./dist/integrations/crewai.js"
+    },
+    "./integrations/langchain": {
+      "types": "./dist/integrations/langchain.d.ts",
+      "default": "./dist/integrations/langchain.js"
+    },
+    "./integrations/openai": {
+      "types": "./dist/integrations/openai.d.ts",
+      "default": "./dist/integrations/openai.js"
+    },
+    "./integrations/anthropic": {
+      "types": "./dist/integrations/anthropic.d.ts",
+      "default": "./dist/integrations/anthropic.js"
+    }
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
@@ -39,6 +69,20 @@
   ],
   "dependencies": {
     "axios": "^1.7.0"
+  },
+  "peerDependencies": {
+    "@google/adk": "^0.6.1",
+    "@langchain/core": "^0.3.0",
+    "openai": "^4.0.0",
+    "@anthropic-ai/sdk": "^0.27.0",
+    "crewai": "*"
+  },
+  "peerDependenciesMeta": {
+    "@google/adk": { "optional": true },
+    "@langchain/core": { "optional": true },
+    "openai": { "optional": true },
+    "@anthropic-ai/sdk": { "optional": true },
+    "crewai": { "optional": true }
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",
