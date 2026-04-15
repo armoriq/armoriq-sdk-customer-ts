@@ -211,11 +211,22 @@ export class ArmorIQSession {
 
     const governingRule = ruleOf(governingEntry);
     const governingPolicyName = governingEntry?.policyName;
-    const governingDefaultAction =
-      governingRule?.enforcementAction ||
+    // For "tool not in allowedTools" we use the POLICY-LEVEL default
+    // (defaultEnforcementAction, defaults to 'block'). The per-rule
+    // enforcementAction is reserved for CONDITIONAL violations like
+    // amount thresholds — a tool that isn't allowed at all can't be
+    // approved through delegation, only blocked.
+    const notAllowedAction =
       governingEntry?.defaultEnforcementAction ||
       pv?.default_enforcement_action ||
       'block';
+    // For threshold violations on an allowed tool, the per-rule action
+    // applies (e.g. 'hold' to require approval for amounts > $50).
+    const conditionalAction =
+      governingRule?.enforcementAction ||
+      governingEntry?.defaultEnforcementAction ||
+      pv?.default_enforcement_action ||
+      'hold';
 
     // 3. denied_tools — explicit deny list from backend evaluation.
     //    Only treat as a deny IF we found a governing policy for this tool.
@@ -234,7 +245,7 @@ export class ArmorIQSession {
             : `Tool '${action}' is denied by policy`);
         return {
           allowed: false,
-          action: governingDefaultAction === 'hold' ? 'hold' : 'block',
+          action: notAllowedAction === 'hold' ? 'hold' : 'block',
           reason,
           matchedPolicy: governingPolicyName,
         };
@@ -255,7 +266,7 @@ export class ArmorIQSession {
         if (!ok) {
           return {
             allowed: false,
-            action: governingDefaultAction === 'hold' ? 'hold' : 'block',
+            action: notAllowedAction === 'hold' ? 'hold' : 'block',
             reason: `Tool '${action}' is not in the allowed tools for policy '${governingPolicyName}'`,
             matchedPolicy: governingPolicyName,
           };
@@ -286,13 +297,9 @@ export class ArmorIQSession {
           if (typeof threshold !== 'number') continue;
           const argVal = Number((toolArgs as any)?.[field]);
           if (!isNaN(argVal) && argVal > Number(threshold)) {
-            const enforcementAction =
-              governingRule.enforcementAction ||
-              governingEntry?.defaultEnforcementAction ||
-              'hold';
             return {
               allowed: false,
-              action: enforcementAction === 'block' ? 'block' : 'hold',
+              action: conditionalAction === 'block' ? 'block' : 'hold',
               reason: `Amount ${argVal} exceeds threshold ${threshold} for field '${field}'`,
               matchedPolicy: governingPolicyName,
             };
