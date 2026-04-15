@@ -473,32 +473,38 @@ export class ArmorIQSession {
    * Mode-aware enforcement entry point. Plugins should call this and
    * not branch themselves — `mode` on the session decides the path.
    *
-   * On a 'hold' decision in local mode, this also handles the
-   * "Option B" delegation flow:
-   *   1. First time the tool is seen → create delegation request,
-   *      return block decision with delegationId (UI shows approval card)
-   *   2. Subsequent attempts (next user prompt / re-plan) → check if the
-   *      delegation was approved; if yes, allow; if rejected, block;
-   *      if still pending, return hold again.
-   *
-   * Approvals expire by default after 30 minutes (configurable on the
-   * platform per delegation request). The plugin should re-prompt the
-   * user after this window.
+   * Behavior by mode:
+   *   - 'local'  → allow / block ONLY. In-process, no network calls.
+   *                A 'hold' threshold violation is reported as 'block'
+   *                with an explanatory reason. Use proxy mode if you
+   *                need delegation/approval workflows.
+   *   - 'proxy'  → allow / block / hold. The proxy resolves the hold
+   *                via the delegation pipeline (request → approve → re-run).
    */
   async check(
     toolName: string,
     toolArgs: Record<string, unknown>,
     opts: { userEmail?: string } = {},
   ): Promise<EnforceResult> {
-    const decision =
-      this.mode === 'proxy'
-        ? await this.enforce(toolName, toolArgs)
-        : await this.enforceLocal(toolName, toolArgs);
+    if (this.mode === 'local') {
+      const decision = await this.enforceLocal(toolName, toolArgs);
+      // Local mode is allow/block only — downgrade any 'hold' to 'block'
+      // so the agent UX is clear: action requires a more permissive mode.
+      if (decision.action === 'hold') {
+        return {
+          ...decision,
+          action: 'block',
+          reason:
+            (decision.reason ?? 'requires approval') +
+            ' — switch ARMORIQ_MODE=proxy to enable approval workflows for this action.',
+        };
+      }
+      return decision;
+    }
 
-    // Plain allow / block — return as-is
+    // Proxy mode: full pipeline including hold + delegation.
+    const decision = await this.enforce(toolName, toolArgs);
     if (decision.action !== 'hold') return decision;
-
-    // 'hold' decision → run the delegation flow (Option B async).
     return this.handleHold(toolName, toolArgs, decision, opts);
   }
 
