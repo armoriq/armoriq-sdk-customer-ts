@@ -183,108 +183,119 @@ export class ArmorIQSession {
     }
 
     const pv = this.currentTokenValue.policyValidation;
-    const matchedPolicyName =
-      pv?.matched_policies?.[0]?.policyName ||
-      pv?.matched_policies?.[0]?.name;
-    const defaultAction =
+    const snapshot = this.currentTokenValue.policySnapshot;
+
+    // Find the policy that ACTUALLY governs this tool by walking the
+    // snapshot — `matched_policies` is the union for the whole plan
+    // (may include unrelated MCPs' policies that ran in the same eval).
+    // The policy whose allowedTools include this action OR which
+    // explicitly mentions this tool in its rules is "ours".
+    const ruleOf = (entry: any) =>
+      entry?.memberRule ?? entry?.clientRule ?? entry?.rules ?? entry;
+    const governingEntry = Array.isArray(snapshot)
+      ? snapshot.find((entry: any) => {
+          const r = ruleOf(entry);
+          if (!r) return false;
+          const allowed: string[] = Array.isArray(r.allowedTools) ? r.allowedTools : [];
+          // A policy "governs" this tool if either:
+          //   - the action is in its allowedTools (positive match)
+          //   - the action would have been in scope by tool prefix match
+          //     (some policies use namespaced names, e.g. "GitHub__search_*")
+          if (allowed.includes(action) || allowed.includes(toolName)) return true;
+          if (allowed.some((t) => t === '*' || t.endsWith('/*') || t.endsWith('*'))) return true;
+          // Fall back to MCP/target name match if we can find one
+          const target = (entry?.targetName || entry?.policyName || '').toLowerCase();
+          return target.includes(mcp.toLowerCase());
+        })
+      : undefined;
+
+    const governingRule = ruleOf(governingEntry);
+    const governingPolicyName = governingEntry?.policyName;
+    const governingDefaultAction =
+      governingRule?.enforcementAction ||
+      governingEntry?.defaultEnforcementAction ||
       pv?.default_enforcement_action ||
-      pv?.matched_policies?.[0]?.default_enforcement_action ||
       'block';
 
-    // 3. denied_tools (explicit deny list from backend evaluation)
+    // 3. denied_tools — explicit deny list from backend evaluation.
+    //    Only treat as a deny IF we found a governing policy for this tool.
     const deniedTools: string[] | undefined = pv?.denied_tools;
     if (Array.isArray(deniedTools)) {
       const denied =
         deniedTools.includes(toolName) || deniedTools.includes(action);
       if (denied) {
+        const reasonFromBackend = pv?.denied_reasons?.find((r: string) =>
+          r.startsWith(`${action}:`) || r.startsWith(`${toolName}:`),
+        );
         const reason =
-          pv?.denied_reasons?.find((r: string) =>
-            r.startsWith(`${action}:`) || r.startsWith(`${toolName}:`),
-          ) || `Tool '${action}' is denied by policy '${matchedPolicyName ?? 'unknown'}'`;
+          reasonFromBackend ||
+          (governingPolicyName
+            ? `Tool '${action}' is denied by policy '${governingPolicyName}'`
+            : `Tool '${action}' is denied by policy`);
         return {
           allowed: false,
-          action: defaultAction === 'hold' ? 'hold' : 'block',
+          action: governingDefaultAction === 'hold' ? 'hold' : 'block',
           reason,
-          matchedPolicy: matchedPolicyName,
+          matchedPolicy: governingPolicyName,
         };
       }
     }
 
-    // 4. allowed_tools (explicit allow list — must include this tool)
-    // The backend returns allowed_tools as the subset of REQUESTED tools
-    // that the policy allows. If our tool isn't in there AND there are
-    // matched policies, treat it as a deny.
-    const allowedTools: string[] | undefined = pv?.allowed_tools;
-    const hasMatchedPolicies = (pv?.matched_policies?.length ?? 0) > 0;
-    if (Array.isArray(allowedTools) && hasMatchedPolicies) {
-      const wildcard = allowedTools.includes('*');
-      const ok =
-        wildcard ||
-        allowedTools.includes(toolName) ||
-        allowedTools.includes(action);
-      if (!ok) {
+    // 4. Snapshot-based check using the governing policy.
+    if (governingRule) {
+      const allowed: string[] = Array.isArray(governingRule.allowedTools)
+        ? governingRule.allowedTools
+        : [];
+      if (allowed.length > 0) {
+        const wildcard = allowed.includes('*');
+        const ok =
+          wildcard ||
+          allowed.includes(action) ||
+          allowed.includes(toolName);
+        if (!ok) {
+          return {
+            allowed: false,
+            action: governingDefaultAction === 'hold' ? 'hold' : 'block',
+            reason: `Tool '${action}' is not in the allowed tools for policy '${governingPolicyName}'`,
+            matchedPolicy: governingPolicyName,
+          };
+        }
+      }
+    } else if (Array.isArray(snapshot) && snapshot.length > 0) {
+      // We have policies but none govern this tool — for an MCP that has
+      // an explicit policy attached, this means "no rule allows it".
+      // Don't false-positive on unrelated MCP policies though: only
+      // block if `allowed_tools` from the backend is empty for this tool.
+      const allowedTools: string[] | undefined = pv?.allowed_tools;
+      if (Array.isArray(allowedTools) && allowedTools.length === 0) {
         return {
           allowed: false,
-          action: defaultAction === 'hold' ? 'hold' : 'block',
-          reason: `Tool '${action}' is not in the allowed tools for policy '${matchedPolicyName ?? 'unknown'}'`,
-          matchedPolicy: matchedPolicyName,
+          action: 'block',
+          reason: `Tool '${action}' is not allowed by any policy in scope`,
         };
       }
     }
 
-    // 5. Policy snapshot — walk the OPA-formatted rules for thresholds
-    //    Snapshot shape (per iap-policy-decision.service.ts:582-596):
-    //      { policyId, policyName, memberRule: { allowedTools, ... }, clientRule: ... }
-    const snapshot = this.currentTokenValue.policySnapshot;
-    if (Array.isArray(snapshot)) {
-      for (const entry of snapshot) {
-        const rule =
-          (entry as any)?.memberRule ??
-          (entry as any)?.clientRule ??
-          (entry as any)?.rules ??
-          (entry as any)?.memberRules?.['*'] ??
-          entry;
-        if (!rule) continue;
-
-        // 5a. Snapshot allowedTools — same logic as #4 but per-policy
-        const ruleAllowed: string[] | undefined = rule.allowedTools;
-        if (Array.isArray(ruleAllowed) && ruleAllowed.length > 0) {
-          const wildcard = ruleAllowed.includes('*');
-          const ok = wildcard || ruleAllowed.includes(action);
-          if (!ok) {
+    // 5. Threshold checks on the governing rule (e.g. amount limits)
+    if (governingRule) {
+      const fin =
+        governingRule.financialRule?.amountThreshold ??
+        governingRule.amountThreshold;
+      if (fin && typeof fin === 'object') {
+        for (const [field, threshold] of Object.entries(fin)) {
+          if (typeof threshold !== 'number') continue;
+          const argVal = Number((toolArgs as any)?.[field]);
+          if (!isNaN(argVal) && argVal > Number(threshold)) {
             const enforcementAction =
-              rule.enforcementAction ||
-              (entry as any)?.defaultEnforcementAction ||
-              defaultAction;
+              governingRule.enforcementAction ||
+              governingEntry?.defaultEnforcementAction ||
+              'hold';
             return {
               allowed: false,
-              action: enforcementAction === 'hold' ? 'hold' : 'block',
-              reason: `Tool '${action}' not allowed by policy '${(entry as any)?.policyName ?? 'unknown'}'`,
-              matchedPolicy: (entry as any)?.policyName,
+              action: enforcementAction === 'block' ? 'block' : 'hold',
+              reason: `Amount ${argVal} exceeds threshold ${threshold} for field '${field}'`,
+              matchedPolicy: governingPolicyName,
             };
-          }
-        }
-
-        // 5b. Amount-threshold check
-        const fin = rule.financialRule?.amountThreshold ?? rule.amountThreshold;
-        if (fin && typeof fin === 'object') {
-          // Common field names: amount, value, total, etc. Walk the args.
-          for (const [field, threshold] of Object.entries(fin)) {
-            // Skip non-numeric meta fields
-            if (typeof threshold !== 'number') continue;
-            const argVal = Number((toolArgs as any)?.[field]);
-            if (!isNaN(argVal) && argVal > Number(threshold)) {
-              const enforcementAction =
-                rule.enforcementAction ||
-                (entry as any)?.defaultEnforcementAction ||
-                'hold';
-              return {
-                allowed: false,
-                action: enforcementAction === 'block' ? 'block' : 'hold',
-                reason: `Amount ${argVal} exceeds threshold ${threshold} for field '${field}'`,
-                matchedPolicy: (entry as any)?.policyName,
-              };
-            }
           }
         }
       }
@@ -294,7 +305,7 @@ export class ArmorIQSession {
       allowed: true,
       action: 'allow',
       reason: 'Allowed by local policy evaluation',
-      matchedPolicy: matchedPolicyName,
+      matchedPolicy: governingPolicyName,
     };
   }
 
