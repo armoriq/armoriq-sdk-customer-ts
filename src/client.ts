@@ -110,14 +110,27 @@ export class ArmorIQClient {
     this.userId = options.userId || process.env.USER_ID || '';
     this.agentId = options.agentId || process.env.AGENT_ID || '';
     this.contextId = options.contextId || process.env.CONTEXT_ID || 'default';
+    // API key resolution order: explicit param → env var → credentials file → empty
     this.apiKey = options.apiKey || process.env.ARMORIQ_API_KEY || '';
+    if (!this.apiKey) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { loadCredentials } = require('./cli/credentials');
+        const creds = loadCredentials();
+        if (creds?.apiKey) {
+          this.apiKey = creds.apiKey;
+        }
+      } catch {
+        // credentials module not available (e.g. bundled build) — ignore
+      }
+    }
 
     // Validate required config
     if (!this.apiKey) {
       throw new ConfigurationException(
         'API key is required for Customer SDK. ' +
-          'Set ARMORIQ_API_KEY environment variable or pass apiKey parameter. ' +
-          'Get your API key from https://platform.armoriq.ai/dashboard/api-keys'
+          'Run `npx @armoriq/sdk login` to authenticate, or set ARMORIQ_API_KEY, or pass apiKey parameter. ' +
+          'Get your API key from https://dev.armoriq.ai'
       );
     }
 

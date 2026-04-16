@@ -4,6 +4,9 @@
   "description": "ArmorIQ SDK - Build secure AI agents with cryptographic intent verification.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "armoriq": "./dist/cli/index.js"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
@@ -38,7 +41,9 @@
     "LICENSE"
   ],
   "dependencies": {
-    "axios": "^1.7.0"
+    "axios": "^1.7.0",
+    "commander": "^14.0.3",
+    "open": "^10.2.0"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",
