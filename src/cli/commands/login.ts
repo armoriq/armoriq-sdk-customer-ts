@@ -120,8 +120,10 @@ export async function loginCommand(options: { backend?: string }) {
     );
     deviceResponse = res.data;
   } catch (err: any) {
-    const msg = err.response?.data?.message || err.message || 'Unknown error';
-    console.error(`  \x1b[31m✘\x1b[0m Failed to request device code: ${msg}`);
+    const msg = err.response?.data?.message || err.response?.statusText || err.message || 'Unknown error';
+    const status = err.response?.status || '';
+    const detail = err.code || '';
+    console.error(`  \x1b[31m✘\x1b[0m Failed to request device code: ${msg}${status ? ` (HTTP ${status})` : ''}${detail ? ` [${detail}]` : ''}`);
     process.exit(1);
   }
 
