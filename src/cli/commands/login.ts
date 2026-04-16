@@ -27,6 +27,7 @@ function findFreePort(): Promise<number> {
 
 const SUCCESS_HTML = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>ArmorIQ</title>
+<link rel="icon" href="https://armoriq.ai/images/favicon.svg" type="image/svg+xml">
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
          display: flex; align-items: center; justify-content: center; height: 100vh;
@@ -61,6 +62,8 @@ interface CallbackResult {
 
 function startCallbackServer(port: number): Promise<CallbackResult> {
   return new Promise((resolve, reject) => {
+    let timeoutHandle: NodeJS.Timeout;
+
     const server = http.createServer((req, res) => {
       const url = new URL(req.url || '/', `http://localhost:${port}`);
 
@@ -70,19 +73,25 @@ function startCallbackServer(port: number): Promise<CallbackResult> {
         const userId = url.searchParams.get('user_id') || '';
         const orgId = url.searchParams.get('org_id') || '';
 
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(SUCCESS_HTML);
-
-        // Shut down the server after responding
-        server.close();
-
-        if (apiKey) {
-          resolve({ apiKey, email, userId, orgId });
-        } else {
-          reject(new Error('No API key received in callback'));
-        }
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Connection': 'close',
+        });
+        res.end(SUCCESS_HTML, () => {
+          // Force-close all connections so Node can exit
+          clearTimeout(timeoutHandle);
+          server.close();
+          server.closeAllConnections?.();
+          setImmediate(() => {
+            if (apiKey) {
+              resolve({ apiKey, email, userId, orgId });
+            } else {
+              reject(new Error('No API key received in callback'));
+            }
+          });
+        });
       } else {
-        res.writeHead(404);
+        res.writeHead(404, { 'Connection': 'close' });
         res.end('Not found');
       }
     });
@@ -90,11 +99,13 @@ function startCallbackServer(port: number): Promise<CallbackResult> {
     server.listen(port, '127.0.0.1');
     server.on('error', reject);
 
-    // Timeout after 15 minutes
-    setTimeout(() => {
+    // Timeout after 15 minutes — use unref() so it doesn't keep Node alive
+    timeoutHandle = setTimeout(() => {
       server.close();
+      server.closeAllConnections?.();
       reject(new Error('Timed out waiting for authorization'));
     }, 15 * 60 * 1000);
+    timeoutHandle.unref();
   });
 }
 
