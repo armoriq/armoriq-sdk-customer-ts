@@ -1,8 +1,9 @@
+import * as http from 'http';
+import * as net from 'net';
 import axios from 'axios';
 import { saveCredentials, getCredentialsPath } from '../credentials';
 
 const DEFAULT_BACKEND = 'https://staging-api.armoriq.ai';
-const POLL_INTERVAL_MS = 5000;
 
 interface DeviceCodeResponse {
   device_code: string;
@@ -13,13 +14,88 @@ interface DeviceCodeResponse {
   interval: number;
 }
 
-interface PollResponse {
-  error?: string;
-  error_description?: string;
-  api_key?: string;
-  email?: string;
-  user_id?: string;
-  org_id?: string;
+function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.listen(0, () => {
+      const addr = srv.address() as net.AddressInfo;
+      srv.close(() => resolve(addr.port));
+    });
+    srv.on('error', reject);
+  });
+}
+
+const SUCCESS_HTML = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>ArmorIQ</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         display: flex; align-items: center; justify-content: center; height: 100vh;
+         margin: 0; background: #f8fafc; color: #1e293b; }
+  .card { text-align: center; padding: 3rem; background: white;
+          border-radius: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+          max-width: 400px; }
+  .check { width: 64px; height: 64px; background: #dcfce7; border-radius: 50%;
+           display: flex; align-items: center; justify-content: center;
+           margin: 0 auto 1.5rem; }
+  .check svg { width: 32px; height: 32px; color: #16a34a; }
+  h2 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+  p { margin: 0; font-size: 0.875rem; color: #64748b; }
+</style></head><body>
+<div class="card">
+  <div class="check">
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+    </svg>
+  </div>
+  <h2>Authorized</h2>
+  <p>You can close this tab and return to your terminal.</p>
+</div>
+</body></html>`;
+
+interface CallbackResult {
+  apiKey: string;
+  email: string;
+  userId: string;
+  orgId: string;
+}
+
+function startCallbackServer(port: number): Promise<CallbackResult> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      const url = new URL(req.url || '/', `http://localhost:${port}`);
+
+      if (url.pathname === '/callback') {
+        const apiKey = url.searchParams.get('key') || '';
+        const email = url.searchParams.get('email') || '';
+        const userId = url.searchParams.get('user_id') || '';
+        const orgId = url.searchParams.get('org_id') || '';
+
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(SUCCESS_HTML);
+
+        // Shut down the server after responding
+        server.close();
+
+        if (apiKey) {
+          resolve({ apiKey, email, userId, orgId });
+        } else {
+          reject(new Error('No API key received in callback'));
+        }
+      } else {
+        res.writeHead(404);
+        res.end('Not found');
+      }
+    });
+
+    server.listen(port, '127.0.0.1');
+    server.on('error', reject);
+
+    // Timeout after 15 minutes
+    setTimeout(() => {
+      server.close();
+      reject(new Error('Timed out waiting for authorization'));
+    }, 15 * 60 * 1000);
+  });
 }
 
 export async function loginCommand(options: { backend?: string }) {
@@ -29,10 +105,19 @@ export async function loginCommand(options: { backend?: string }) {
   console.log('  \x1b[1m\x1b[36m┃ ArmorIQ Login\x1b[0m');
   console.log('');
 
-  // Step 1: request device code
+  // Step 1: find a free port and start the local callback server
+  const port = await findFreePort();
+  const callbackUrl = `http://localhost:${port}/callback`;
+  const callbackPromise = startCallbackServer(port);
+
+  // Step 2: request device code from backend (include our callback URL)
   let deviceResponse: DeviceCodeResponse;
   try {
-    const res = await axios.post(`${backend}/auth/device/code`, {}, { timeout: 10000 });
+    const res = await axios.post(
+      `${backend}/auth/device/code`,
+      { callback_url: callbackUrl },
+      { timeout: 10000 },
+    );
     deviceResponse = res.data;
   } catch (err: any) {
     const msg = err.response?.data?.message || err.message || 'Unknown error';
@@ -40,104 +125,94 @@ export async function loginCommand(options: { backend?: string }) {
     process.exit(1);
   }
 
-  const { device_code, user_code, verification_uri_complete, expires_in, interval } = deviceResponse;
+  const { user_code, verification_uri_complete } = deviceResponse;
 
-  // Step 2: open browser
-  console.log(`  Opening browser at:\n    \x1b[36m\x1b[1m${verification_uri_complete}\x1b[0m`);
-  console.log('');
+  // Step 3: open browser
+  const browserUrl = `${verification_uri_complete}&callback=${encodeURIComponent(callbackUrl)}`;
+  console.log(`  Opening browser...\n`);
 
   try {
-    // Dynamic import for ESM-only `open` package
     const open = (await import('open')).default;
-    await open(verification_uri_complete);
+    await open(browserUrl);
   } catch {
     console.log('  \x1b[33m!\x1b[0m Browser didn\'t open automatically.');
-    console.log(`  Visit the URL above and enter code: \x1b[1m${user_code}\x1b[0m`);
   }
 
-  console.log(`  Confirm this code in your browser: \x1b[1m${user_code}\x1b[0m`);
-  console.log('');
+  console.log(`  If the browser didn't open, visit:`);
+  console.log(`    \x1b[36m\x1b[1m${browserUrl}\x1b[0m\n`);
+  console.log(`  Confirm this code in your browser: \x1b[1m${user_code}\x1b[0m\n`);
 
-  // Step 3: poll for token
+  process.stdout.write('  Waiting for authorization...');
+
+  // Step 4: wait for the callback OR poll as fallback
+  try {
+    const result = await Promise.race([
+      callbackPromise,
+      pollFallback(backend, deviceResponse.device_code, deviceResponse.interval, deviceResponse.expires_in),
+    ]);
+
+    process.stdout.write(' \x1b[32m✔\x1b[0m\n');
+    console.log('');
+    console.log(`  \x1b[32m✔\x1b[0m Logged in as \x1b[1m${result.email || 'unknown'}\x1b[0m`);
+
+    saveCredentials({
+      apiKey: result.apiKey,
+      email: result.email,
+      userId: result.userId,
+      orgId: result.orgId,
+      savedAt: new Date().toISOString(),
+    });
+
+    console.log(`  \x1b[32m✔\x1b[0m API key saved to ${getCredentialsPath()}`);
+    console.log('');
+  } catch (err: any) {
+    process.stdout.write(' \x1b[31m✘\x1b[0m\n');
+    console.error(`  \x1b[31m✘\x1b[0m ${err.message || 'Authorization failed'}`);
+    process.exit(1);
+  }
+}
+
+async function pollFallback(
+  backend: string,
+  deviceCode: string,
+  interval: number,
+  expiresIn: number,
+): Promise<CallbackResult> {
   const pollIntervalMs = (interval || 5) * 1000;
-  const deadline = Date.now() + expires_in * 1000;
-  let dots = '';
+  const deadline = Date.now() + expiresIn * 1000;
 
   while (Date.now() < deadline) {
-    process.stdout.write(`\r  Waiting for authorization${dots.padEnd(3, ' ')}`);
-    dots = dots.length >= 3 ? '' : dots + '.';
-
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
 
     try {
-      const res = await axios.post<PollResponse>(
+      const res = await axios.post(
         `${backend}/auth/device/token`,
-        { deviceCode: device_code },
+        { deviceCode },
         { timeout: 10000 },
       );
       const data = res.data;
 
-      if (data.error === 'authorization_pending') {
+      if (data.error === 'authorization_pending' || data.error === 'slow_down') {
         continue;
       }
-
-      if (data.error === 'slow_down') {
-        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-        continue;
-      }
-
-      if (data.error === 'expired_token') {
-        process.stdout.write('\r');
-        console.log('  \x1b[33m!\x1b[0m Device code expired. Please run `armoriq login` again.');
-        process.exit(1);
-      }
-
-      if (data.error === 'access_denied') {
-        process.stdout.write('\r');
-        console.log('  \x1b[31m✘\x1b[0m Authorization denied.');
-        process.exit(1);
-      }
-
       if (data.error) {
-        process.stdout.write('\r');
-        console.log(`  \x1b[31m✘\x1b[0m ${data.error_description || data.error}`);
-        process.exit(1);
+        throw new Error(data.error_description || data.error);
       }
-
-      // Success
       if (data.api_key) {
-        process.stdout.write('\r');
-        console.log(`  Waiting for authorization... \x1b[32m✔\x1b[0m`);
-        console.log('');
-        console.log(`  \x1b[32m✔\x1b[0m Logged in as \x1b[1m${data.email || 'unknown'}\x1b[0m`);
-
-        saveCredentials({
+        return {
           apiKey: data.api_key,
           email: data.email || '',
           userId: data.user_id || '',
           orgId: data.org_id || '',
-          savedAt: new Date().toISOString(),
-        });
-
-        console.log(`  \x1b[32m✔\x1b[0m API key saved to ${getCredentialsPath()}`);
-        console.log('');
-        console.log('  \x1b[2mUse it via:\x1b[0m');
-        console.log('    \x1b[2m- SDK: new ArmorIQClient({}) — auto-loaded from credentials file\x1b[0m');
-        console.log('    \x1b[2m- Env: export ARMORIQ_API_KEY=$(cat ~/.armoriq/credentials.json | jq -r .apiKey)\x1b[0m');
-        console.log('    \x1b[2m- Claude Code: set api_key in /plugin → armorclaude → Configure\x1b[0m');
-        console.log('');
-        return;
+        };
       }
     } catch (err: any) {
-      // Network errors during polling are retried silently
       if (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT') {
         continue;
       }
+      throw err;
     }
   }
 
-  // Timeout
-  process.stdout.write('\r');
-  console.log('  \x1b[33m!\x1b[0m Timed out waiting for authorization. Please run `armoriq login` again.');
-  process.exit(1);
+  throw new Error('Timed out waiting for authorization. Run `armoriq login` again.');
 }
