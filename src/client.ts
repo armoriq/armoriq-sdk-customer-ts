@@ -883,10 +883,11 @@ export class ArmorIQClient {
    * Create a delegation request on the backend.
    */
   async createDelegationRequest(params: DelegationRequestParams): Promise<DelegationRequestResult> {
+    const idempotencyKey = `deleg-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const response = await this.httpClient.post(
       `${this.backendEndpoint}/delegation/request`,
       params,
-      { headers: { 'X-API-Key': this.apiKey, 'X-User-Email': params.requesterEmail } },
+      { headers: { 'X-API-Key': this.apiKey, 'X-User-Email': params.requesterEmail, 'Idempotency-Key': idempotencyKey } },
     );
 
     if (response.status >= 400) {
