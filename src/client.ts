@@ -68,7 +68,6 @@ export class ArmorIQClient {
   private contextId: string;
   private apiKey: string;
   private timeout: number;
-  private maxRetries: number;
   private verifySsl: boolean;
   private httpClient: AxiosInstance;
   private tokenCache: Map<string, IntentToken>;
@@ -151,7 +150,6 @@ export class ArmorIQClient {
 
     this.proxyEndpoints = options.proxyEndpoints || {};
     this.timeout = options.timeout || 30000;
-    this.maxRetries = options.maxRetries || 3;
     this.verifySsl = options.verifySsl ?? true;
 
     // Initialize HTTP client
