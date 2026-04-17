@@ -6,13 +6,14 @@
  * that's intentional, so the release owner consciously flips the default
  * before publishing prod.
  *
- *   main branch  →  ARMORIQ_ENV = "production"  (SDK defaults to api.armoriq.ai)
- *   dev  branch  →  ARMORIQ_ENV = "staging"     (SDK defaults to staging-api.armoriq.ai)
+ *   main branch  →  ARMORIQ_ENV = "production"  (prod URLs; published as stable)
+ *   dev  branch  →  ARMORIQ_ENV = "staging"     (staging URLs; published as -dev)
  *
- * Runtime overrides (same precedence as Python SDK):
- *   1. explicit constructor args on ArmorIQClient
- *   2. ARMORIQ_ENV / BACKEND_ENDPOINT / IAP_ENDPOINT / PROXY_ENDPOINT env vars
- *   3. baked-in ARMORIQ_ENV below
+ * The baked constant is the ONLY source of truth — no runtime env-var
+ * override. To point the SDK at staging, install the dev build; to
+ * override a specific endpoint for testing, pass `backendEndpoint:` etc.
+ * to the ArmorIQClient constructor or set BACKEND_ENDPOINT / IAP_ENDPOINT
+ * / PROXY_ENDPOINT env vars.
  */
 
 export const ARMORIQ_ENV: 'production' | 'staging' = 'production';
@@ -42,9 +43,5 @@ export const ENDPOINTS = {
 export type EndpointKind = 'backend' | 'proxy' | 'iap';
 
 export function resolveEndpoint(kind: EndpointKind): string {
-  const override = (process.env.ARMORIQ_ENV?.toLowerCase() ?? ARMORIQ_ENV) as
-    | 'production'
-    | 'staging';
-  const env = override === 'staging' ? 'staging' : 'production';
-  return ENDPOINTS[env][kind];
+  return ENDPOINTS[ARMORIQ_ENV][kind];
 }
