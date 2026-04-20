@@ -117,7 +117,7 @@ export class ArmorIQClient {
     if (!this.apiKey) {
       try {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { loadCredentials } = require('./cli/credentials');
+        const { loadCredentials } = require('./credentials');
         const creds = loadCredentials();
         if (creds?.apiKey) {
           this.apiKey = creds.apiKey;
@@ -131,7 +131,8 @@ export class ArmorIQClient {
     if (!this.apiKey) {
       throw new ConfigurationException(
         'API key is required for Customer SDK. ' +
-          'Run `npx @armoriq/sdk login` to authenticate, or set ARMORIQ_API_KEY, or pass apiKey parameter. ' +
+          'Install the ArmorIQ CLI (`pip install armoriq-sdk`) and run `armoriq login` to authenticate, ' +
+          'or set ARMORIQ_API_KEY, or pass apiKey parameter. ' +
           'Get your API key from https://dev.armoriq.ai'
       );
     }
