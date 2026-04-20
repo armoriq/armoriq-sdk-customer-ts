@@ -28,6 +28,7 @@ import {
   PolicyBlockedException,
   PolicyHoldException,
 } from './exceptions';
+import { resolveEndpoint } from './_build_env';
 
 /**
  * Main client for ArmorIQ SDK.
@@ -89,40 +90,55 @@ export class ArmorIQClient {
     const isArmorClaw = resolvedApiKey.startsWith('ak_claw_');
 
     // Route endpoints based on API key prefix (Stripe pattern)
-    // ak_claw_ → ArmorClaw standalone, ak_live_ → ArmorIQ platform, ak_test_ → sandbox
+    // ak_claw_ → ArmorClaw standalone; ak_live_ / ak_test_ → ArmorIQ platform.
+    // For ArmorIQ: production vs staging URLs come from _build_env (branch-baked).
     this.iapEndpoint =
       options.iapEndpoint ||
       process.env.IAP_ENDPOINT ||
       (isArmorClaw
         ? (useProd ? ArmorIQClient.ARMORCLAW_IAP_ENDPOINT : ArmorIQClient.LOCAL_ARMORCLAW_IAP_ENDPOINT)
-        : (useProd ? ArmorIQClient.DEFAULT_IAP_ENDPOINT : ArmorIQClient.LOCAL_IAP_ENDPOINT));
+        : (useProd ? resolveEndpoint('iap') : ArmorIQClient.LOCAL_IAP_ENDPOINT));
 
     this.defaultProxyEndpoint =
       options.proxyEndpoint ||
       process.env.PROXY_ENDPOINT ||
       (isArmorClaw
         ? (useProd ? ArmorIQClient.ARMORCLAW_PROXY_ENDPOINT : ArmorIQClient.LOCAL_ARMORCLAW_PROXY_ENDPOINT)
-        : (useProd ? ArmorIQClient.DEFAULT_PROXY_ENDPOINT : ArmorIQClient.LOCAL_PROXY_ENDPOINT));
+        : (useProd ? resolveEndpoint('proxy') : ArmorIQClient.LOCAL_PROXY_ENDPOINT));
 
     this.backendEndpoint =
       options.backendEndpoint ||
       process.env.BACKEND_ENDPOINT ||
       (isArmorClaw
         ? (useProd ? ArmorIQClient.ARMORCLAW_BACKEND_ENDPOINT : ArmorIQClient.LOCAL_ARMORCLAW_BACKEND_ENDPOINT)
-        : (useProd ? ArmorIQClient.DEFAULT_BACKEND_ENDPOINT : ArmorIQClient.LOCAL_BACKEND_ENDPOINT));
+        : (useProd ? resolveEndpoint('backend') : ArmorIQClient.LOCAL_BACKEND_ENDPOINT));
 
     // Load user/agent identifiers
     this.userId = options.userId || process.env.USER_ID || '';
     this.agentId = options.agentId || process.env.AGENT_ID || '';
     this.contextId = options.contextId || process.env.CONTEXT_ID || 'default';
+    // API key resolution order: explicit param → env var → credentials file → empty
     this.apiKey = options.apiKey || process.env.ARMORIQ_API_KEY || '';
+    if (!this.apiKey) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { loadCredentials } = require('./credentials');
+        const creds = loadCredentials();
+        if (creds?.apiKey) {
+          this.apiKey = creds.apiKey;
+        }
+      } catch {
+        // credentials module not available (e.g. bundled build) — ignore
+      }
+    }
 
     // Validate required config
     if (!this.apiKey) {
       throw new ConfigurationException(
         'API key is required for Customer SDK. ' +
-          'Set ARMORIQ_API_KEY environment variable or pass apiKey parameter. ' +
-          'Get your API key from https://platform.armoriq.ai/dashboard/api-keys'
+          'Install the ArmorIQ CLI (`pip install armoriq-sdk`) and run `armoriq login` to authenticate, ' +
+          'or set ARMORIQ_API_KEY, or pass apiKey parameter. ' +
+          'Get your API key from https://dev.armoriq.ai'
       );
     }
 
