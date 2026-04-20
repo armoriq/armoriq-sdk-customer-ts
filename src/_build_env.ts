@@ -16,7 +16,7 @@
  * / PROXY_ENDPOINT env vars.
  */
 
-export const ARMORIQ_ENV: 'production' | 'staging' = 'staging';
+export const ARMORIQ_ENV: 'production' | 'staging' = 'production';
 
 // Endpoint table — keep in sync with GCP Cloud Run domain mappings.
 //   prod:
