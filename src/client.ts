@@ -39,6 +39,12 @@ import { resolveEndpoint, ARMORIQ_ENV } from './_build_env';
  * - MCP action invocation
  * - Agent delegation
  */
+function normalizeMatchedPolicy(raw: any): string | undefined {
+  const v = raw?.matched_policy ?? raw?.matchedPolicy;
+  if (!v) return undefined;
+  return typeof v === 'object' ? v.name : v;
+}
+
 export class ArmorIQClient {
   // Production endpoints (default) - ArmorIQ platform
   private static readonly DEFAULT_IAP_ENDPOINT = 'https://iap.armoriq.ai';
@@ -72,7 +78,6 @@ export class ArmorIQClient {
   private contextId: string;
   private apiKey: string;
   private timeout: number;
-  private maxRetries: number;
   private verifySsl: boolean;
   private httpClient: AxiosInstance;
   private tokenCache: Map<string, IntentToken>;
@@ -163,7 +168,6 @@ export class ArmorIQClient {
 
     this.proxyEndpoints = options.proxyEndpoints || {};
     this.timeout = options.timeout || 30000;
-    this.maxRetries = options.maxRetries || 3;
     this.verifySsl = options.verifySsl ?? true;
 
     // Initialize HTTP client
@@ -449,7 +453,10 @@ export class ArmorIQClient {
       tool: action,
       params: invokeParams,
       arguments: invokeParams,
-      intent_token: intentToken.rawToken,
+      intent_token: {
+        ...intentToken.rawToken,
+        policy_validation: intentToken.policyValidation,
+      },
       merkle_proof: merkleProof,
       plan: intentToken.rawToken?.plan,
       _iam_context: iamContext,
@@ -911,10 +918,11 @@ export class ArmorIQClient {
    * Create a delegation request on the backend.
    */
   async createDelegationRequest(params: DelegationRequestParams): Promise<DelegationRequestResult> {
+    const idempotencyKey = `deleg-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const response = await this.httpClient.post(
       `${this.backendEndpoint}/delegation/request`,
       params,
-      { headers: { 'X-API-Key': this.apiKey, 'X-User-Email': params.requesterEmail } },
+      { headers: { 'X-API-Key': this.apiKey, 'X-User-Email': params.requesterEmail, 'Idempotency-Key': idempotencyKey } },
     );
 
     if (response.status >= 400) {
@@ -1023,6 +1031,7 @@ export class ArmorIQClient {
           enforcement.action,
           enforcement.reason,
           enforcement.metadata,
+          normalizeMatchedPolicy(enforcement),
         );
       }
 
@@ -1042,6 +1051,7 @@ export class ArmorIQClient {
             responseData.message || 'Action held for approval',
             responseData.delegation_context,
             enforcement.metadata,
+            normalizeMatchedPolicy(enforcement),
           );
         }
 
@@ -1084,6 +1094,7 @@ export class ArmorIQClient {
             responseData.message || 'Action held for approval (delegation request failed)',
             responseData.delegation_context,
             { ...enforcement.metadata, delegationError: delegationError.message },
+            normalizeMatchedPolicy(enforcement),
           );
         }
 

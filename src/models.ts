@@ -274,8 +274,6 @@ export interface SDKConfig {
   contextId?: string;
   /** Request timeout in seconds */
   timeout: number;
-  /** Maximum retry attempts */
-  maxRetries: number;
   /** Verify SSL certificates */
   verifySsl: boolean;
   /** API key for authentication */
