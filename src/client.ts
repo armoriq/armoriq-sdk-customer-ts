@@ -419,7 +419,10 @@ export class ArmorIQClient {
       tool: action,
       params: invokeParams,
       arguments: invokeParams,
-      intent_token: intentToken.rawToken,
+      intent_token: {
+        ...intentToken.rawToken,
+        policy_validation: intentToken.policyValidation,
+      },
       merkle_proof: merkleProof,
       plan: intentToken.rawToken?.plan,
       _iam_context: iamContext,
