@@ -28,7 +28,7 @@ import {
   PolicyBlockedException,
   PolicyHoldException,
 } from './exceptions';
-import { resolveEndpoint } from './_build_env';
+import { resolveEndpoint, ARMORIQ_ENV } from './_build_env';
 
 /**
  * Main client for ArmorIQ SDK.
@@ -55,10 +55,8 @@ export class ArmorIQClient {
   private static readonly ARMORCLAW_PROXY_ENDPOINT = 'https://customer-proxy.armoriq.ai';
   private static readonly ARMORCLAW_BACKEND_ENDPOINT = 'https://armorclaw-api.armoriq.ai';
 
-  // Local development endpoints - ArmorIQ platform
-  private static readonly LOCAL_IAP_ENDPOINT = 'http://127.0.0.1:8000';
-  private static readonly LOCAL_PROXY_ENDPOINT = 'http://127.0.0.1:3001';
-  private static readonly LOCAL_BACKEND_ENDPOINT = 'http://127.0.0.1:3000';
+  // Local development endpoints for the ArmorIQ platform live in
+  // _build_env.ts under ENDPOINTS.local — resolved via resolveEndpoint().
 
   // Local development endpoints - ArmorClaw standalone
   private static readonly LOCAL_ARMORCLAW_IAP_ENDPOINT = 'http://127.0.0.1:8080';
@@ -81,9 +79,13 @@ export class ArmorIQClient {
   private metadataCache: Map<string, MCPSemanticMetadata>;
 
   constructor(options: Partial<SDKConfig> & { apiKey?: string; useProduction?: boolean } = {}) {
-    // Determine if using production based on environment
-    const envMode = process.env.ARMORIQ_ENV?.toLowerCase() || 'production';
-    const useProd = (options.useProduction ?? true) && envMode === 'production';
+    // `useProduction: false` is a legacy escape hatch for local dev — treat
+    // it as ARMORIQ_ENV=local unless the caller set the env var explicitly.
+    if (options.useProduction === false && !process.env.ARMORIQ_ENV) {
+      process.env.ARMORIQ_ENV = 'local';
+    }
+    const envMode = (process.env.ARMORIQ_ENV || '').toLowerCase();
+    const isLocal = envMode === 'local';
 
     // Resolve API key early to determine product routing
     const resolvedApiKey = options.apiKey || process.env.ARMORIQ_API_KEY || '';
@@ -91,27 +93,29 @@ export class ArmorIQClient {
 
     // Route endpoints based on API key prefix (Stripe pattern)
     // ak_claw_ → ArmorClaw standalone; ak_live_ / ak_test_ → ArmorIQ platform.
-    // For ArmorIQ: production vs staging URLs come from _build_env (branch-baked).
+    // For ArmorIQ: production / staging / local URLs all come from
+    // resolveEndpoint — which reads ARMORIQ_ENV and falls back to the
+    // branch-baked constant in _build_env.ts.
     this.iapEndpoint =
       options.iapEndpoint ||
       process.env.IAP_ENDPOINT ||
       (isArmorClaw
-        ? (useProd ? ArmorIQClient.ARMORCLAW_IAP_ENDPOINT : ArmorIQClient.LOCAL_ARMORCLAW_IAP_ENDPOINT)
-        : (useProd ? resolveEndpoint('iap') : ArmorIQClient.LOCAL_IAP_ENDPOINT));
+        ? (isLocal ? ArmorIQClient.LOCAL_ARMORCLAW_IAP_ENDPOINT : ArmorIQClient.ARMORCLAW_IAP_ENDPOINT)
+        : resolveEndpoint('iap'));
 
     this.defaultProxyEndpoint =
       options.proxyEndpoint ||
       process.env.PROXY_ENDPOINT ||
       (isArmorClaw
-        ? (useProd ? ArmorIQClient.ARMORCLAW_PROXY_ENDPOINT : ArmorIQClient.LOCAL_ARMORCLAW_PROXY_ENDPOINT)
-        : (useProd ? resolveEndpoint('proxy') : ArmorIQClient.LOCAL_PROXY_ENDPOINT));
+        ? (isLocal ? ArmorIQClient.LOCAL_ARMORCLAW_PROXY_ENDPOINT : ArmorIQClient.ARMORCLAW_PROXY_ENDPOINT)
+        : resolveEndpoint('proxy'));
 
     this.backendEndpoint =
       options.backendEndpoint ||
       process.env.BACKEND_ENDPOINT ||
       (isArmorClaw
-        ? (useProd ? ArmorIQClient.ARMORCLAW_BACKEND_ENDPOINT : ArmorIQClient.LOCAL_ARMORCLAW_BACKEND_ENDPOINT)
-        : (useProd ? resolveEndpoint('backend') : ArmorIQClient.LOCAL_BACKEND_ENDPOINT));
+        ? (isLocal ? ArmorIQClient.LOCAL_ARMORCLAW_BACKEND_ENDPOINT : ArmorIQClient.ARMORCLAW_BACKEND_ENDPOINT)
+        : resolveEndpoint('backend'));
 
     // Load user/agent identifiers
     this.userId = options.userId || process.env.USER_ID || '';
@@ -179,8 +183,9 @@ export class ArmorIQClient {
     this.tokenCache = new Map();
     this.metadataCache = new Map();
 
+    const mode = (process.env.ARMORIQ_ENV || '').toLowerCase() || ARMORIQ_ENV;
     console.log(
-      `ArmorIQ SDK initialized: mode=${useProd ? 'production' : 'development'}, ` +
+      `ArmorIQ SDK initialized: mode=${mode}, ` +
         `user=${this.userId}, agent=${this.agentId}, ` +
         `iap=${this.iapEndpoint}, proxy=${this.defaultProxyEndpoint}, ` +
         `backend=${this.backendEndpoint}, ` +
