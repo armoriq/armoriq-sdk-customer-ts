@@ -39,6 +39,12 @@ import { resolveEndpoint, ARMORIQ_ENV } from './_build_env';
  * - MCP action invocation
  * - Agent delegation
  */
+function normalizeMatchedPolicy(raw: any): string | undefined {
+  const v = raw?.matched_policy ?? raw?.matchedPolicy;
+  if (!v) return undefined;
+  return typeof v === 'object' ? v.name : v;
+}
+
 export class ArmorIQClient {
   // Production endpoints (default) - ArmorIQ platform
   private static readonly DEFAULT_IAP_ENDPOINT = 'https://iap.armoriq.ai';
@@ -1025,6 +1031,7 @@ export class ArmorIQClient {
           enforcement.action,
           enforcement.reason,
           enforcement.metadata,
+          normalizeMatchedPolicy(enforcement),
         );
       }
 
@@ -1044,6 +1051,7 @@ export class ArmorIQClient {
             responseData.message || 'Action held for approval',
             responseData.delegation_context,
             enforcement.metadata,
+            normalizeMatchedPolicy(enforcement),
           );
         }
 
@@ -1086,6 +1094,7 @@ export class ArmorIQClient {
             responseData.message || 'Action held for approval (delegation request failed)',
             responseData.delegation_context,
             { ...enforcement.metadata, delegationError: delegationError.message },
+            normalizeMatchedPolicy(enforcement),
           );
         }
 
