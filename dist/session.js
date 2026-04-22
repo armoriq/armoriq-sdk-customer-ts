@@ -248,20 +248,15 @@ class ArmorIQSession {
             };
         }
         try {
-            const proxyEndpoint = this.client.defaultProxyEndpoint;
+            const backendEndpoint = this.client.backendEndpoint || this.client.defaultProxyEndpoint;
             const apiKey = this.client.apiKey;
-            const response = await axios_1.default.post(`${proxyEndpoint}/invoke`, {
-                enforce_only: true,
-                mcp: resolvedMcp,
+            const userEmail = this.client.userEmailOverride || this.client.userId;
+            const response = await axios_1.default.post(`${backendEndpoint}/iap/sdk/enforce`, {
                 tool: action,
-                action,
-                params: toolArgs,
                 arguments: toolArgs,
                 intent_token: this.currentTokenValue.rawToken,
-                plan: this.currentTokenValue.rawToken?.plan,
-                ...(this.currentTokenValue.policySnapshot
-                    ? { policy_snapshot: this.currentTokenValue.policySnapshot }
-                    : {}),
+                policy_snapshot: this.currentTokenValue.policySnapshot,
+                user_email: userEmail,
             }, {
                 headers: {
                     'X-API-Key': apiKey,

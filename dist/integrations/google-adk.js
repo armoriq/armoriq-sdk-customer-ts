@@ -33,6 +33,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ArmorIQADK = void 0;
 const client_1 = require("../client");
+const session_1 = require("../session");
 let _BasePluginCache = null;
 function loadBasePlugin() {
     if (_BasePluginCache)
@@ -100,12 +101,12 @@ function buildArmorIQADKClass() {
             }));
             if (toolCalls.length === 0)
                 return undefined;
-            const session = this.armoriqClient.startSession({
-                defaultMcpName: this.opts.defaultMcpName,
+            const session = new session_1.ArmorIQSession(this.armoriqClient, {
+                defaultMcpName: this.opts.defaultMcpName || '*',
                 toolNameParser: this.opts.toolNameParser,
                 llm: this.opts.llm,
                 validitySeconds: this.opts.validitySeconds,
-                mode: this.opts.mode ?? 'local',
+                mode: this.opts.mode ?? 'sdk',
             });
             // ADK's userContent is a Content object ({role, parts}), not a string.
             const rawContent = callbackContext?.userContent ??
