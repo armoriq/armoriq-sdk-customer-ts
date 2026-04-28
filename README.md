@@ -18,10 +18,13 @@ The ArmorIQ SDK enables developers to build AI agents with built-in security and
 ## Installation
 
 ```bash
-npm install @armoriq/sdk
+# Install from GitHub
+npm install github:armoriq/armoriq-sdk-customer-ts
 # or
-yarn add @armoriq/sdk
+yarn add github:armoriq/armoriq-sdk-customer-ts
 ```
+
+> **Note:** npm package `@armoriq/sdk` coming soon to npm registry
 
 ---
 
