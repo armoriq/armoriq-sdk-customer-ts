@@ -8,6 +8,8 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "test": "jest",
+    "test:unit": "jest --testPathIgnorePatterns=/tests/e2e/",
+    "test:e2e": "jest tests/e2e",
     "lint": "eslint 'src/**/*.ts'",
     "format": "prettier --write \"src/**/*.ts\"",
     "prepublishOnly": "npm run build"
