@@ -9,7 +9,14 @@
  * @version 0.2.6
  */
 
-export { ArmorIQClient } from './client';
+export { ArmorIQClient, ArmorIQUserScope } from './client';
+export {
+  ArmorIQSession,
+  SessionOptions,
+  SessionMode,
+  EnforceResult,
+  ReportOptions,
+} from './session';
 export {
   ArmorIQException,
   InvalidTokenException,
@@ -37,7 +44,38 @@ export {
   DelegationRequestParams,
   DelegationRequestResult,
   ApprovedDelegation,
+  ToolCall,
+  McpCredential,
+  McpCredentialMap,
 } from './models';
+
+export {
+  defaultToolNameParser,
+  buildPlanFromToolCalls,
+  hashToolCalls,
+  ToolNameParser,
+  PlanStep,
+  BuiltPlan,
+} from './plan_builder';
+
+export {
+  ArmorIQConfig,
+  ArmorIQConfigError,
+  IdentityConfig,
+  ProxyConfig,
+  MCPAuthConfig,
+  MCPAuthType,
+  MCPServerConfig,
+  PolicyConfig,
+  IntentConfig,
+  Environment,
+  loadArmorIQConfig,
+  parseArmorIQConfig,
+  resolveEnvReference,
+  resolveEnvReferences,
+  saveArmorIQConfig,
+  DEFAULT_PROXY_URL,
+} from './config';
 
 export const VERSION = '0.2.6';
 export const AUTHOR = 'ArmorIQ Team';
