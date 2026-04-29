@@ -4,6 +4,9 @@
   "description": "ArmorIQ SDK - Build secure AI agents with cryptographic intent verification.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "armoriq": "dist/cli/index.js"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
@@ -40,10 +43,12 @@
     "LICENSE"
   ],
   "dependencies": {
-    "axios": "^1.7.0"
+    "axios": "^1.7.0",
+    "js-yaml": "^4.1.1"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.0.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
