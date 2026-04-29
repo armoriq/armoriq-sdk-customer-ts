@@ -37,7 +37,19 @@ export {
   DelegationRequestParams,
   DelegationRequestResult,
   ApprovedDelegation,
+  ToolCall,
+  McpCredential,
+  McpCredentialMap,
 } from './models';
+
+export {
+  defaultToolNameParser,
+  buildPlanFromToolCalls,
+  hashToolCalls,
+  ToolNameParser,
+  PlanStep,
+  BuiltPlan,
+} from './plan_builder';
 
 export const VERSION = '0.2.6';
 export const AUTHOR = 'ArmorIQ Team';

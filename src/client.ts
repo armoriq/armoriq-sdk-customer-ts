@@ -17,6 +17,8 @@ import {
   DelegationRequestResult,
   ApprovedDelegation,
   HoldInfo,
+  McpCredential,
+  McpCredentialMap,
 } from './models';
 import {
   InvalidTokenException,
@@ -82,6 +84,7 @@ export class ArmorIQClient {
   private httpClient: AxiosInstance;
   private tokenCache: Map<string, IntentToken>;
   private metadataCache: Map<string, MCPSemanticMetadata>;
+  private mcpCredentials: McpCredentialMap;
 
   constructor(options: Partial<SDKConfig> & { apiKey?: string; useProduction?: boolean } = {}) {
     // `useProduction: false` is a legacy escape hatch for local dev — treat
@@ -186,6 +189,7 @@ export class ArmorIQClient {
 
     this.tokenCache = new Map();
     this.metadataCache = new Map();
+    this.mcpCredentials = ArmorIQClient.resolveMcpCredentials(options.mcpCredentials);
 
     const mode = (process.env.ARMORIQ_ENV || '').toLowerCase() || ARMORIQ_ENV;
     console.log(
@@ -220,6 +224,75 @@ export class ArmorIQClient {
    */
   get proxyEndpoint(): string {
     return this.defaultProxyEndpoint;
+  }
+
+  // ─── MCP credential resolution ─────────────────────────────────────
+  // Mirrors armoriq_sdk/client.py:_resolve_mcp_credentials so the same
+  // env JSON / per-MCP env vars work in both SDKs.
+  //   1. ARMORIQ_MCP_CREDENTIALS (JSON object {mcpName: cred})
+  //   2. ARMORIQ_MCP_<SAFE_NAME>_AUTH_TYPE plus matching value vars
+  //   3. constructor option `mcpCredentials` — wins.
+
+  static resolveMcpCredentials(
+    fromOptions?: McpCredentialMap,
+  ): McpCredentialMap {
+    const merged: McpCredentialMap = {};
+
+    const jsonRaw = process.env.ARMORIQ_MCP_CREDENTIALS;
+    if (jsonRaw) {
+      try {
+        const parsed = JSON.parse(jsonRaw);
+        if (parsed && typeof parsed === 'object') {
+          for (const [k, v] of Object.entries(parsed)) {
+            merged[k] = v as McpCredential;
+          }
+        }
+      } catch (e) {
+        console.warn(`Failed to parse ARMORIQ_MCP_CREDENTIALS as JSON: ${(e as Error).message}`);
+      }
+    }
+
+    const safeNames = new Set<string>();
+    for (const key of Object.keys(process.env)) {
+      const m = /^ARMORIQ_MCP_(.+)_AUTH_TYPE$/.exec(key);
+      if (m) safeNames.add(m[1]);
+    }
+    for (const safe of safeNames) {
+      const authType = (process.env[`ARMORIQ_MCP_${safe}_AUTH_TYPE`] || '').toLowerCase();
+      let cred: McpCredential | undefined;
+      if (authType === 'bearer') {
+        const token = process.env[`ARMORIQ_MCP_${safe}_TOKEN`];
+        if (token) cred = { authType: 'bearer', token };
+      } else if (authType === 'api_key') {
+        const apiKey = process.env[`ARMORIQ_MCP_${safe}_API_KEY`];
+        const headerName = process.env[`ARMORIQ_MCP_${safe}_HEADER_NAME`];
+        if (apiKey) cred = headerName ? { authType: 'api_key', apiKey, headerName } : { authType: 'api_key', apiKey };
+      } else if (authType === 'basic') {
+        const username = process.env[`ARMORIQ_MCP_${safe}_USERNAME`];
+        const password = process.env[`ARMORIQ_MCP_${safe}_PASSWORD`];
+        if (username && password) cred = { authType: 'basic', username, password };
+      } else if (authType === 'none') {
+        cred = { authType: 'none' };
+      }
+      if (cred) merged[safe] = cred;
+    }
+
+    if (fromOptions) {
+      for (const [k, v] of Object.entries(fromOptions)) {
+        merged[k] = v;
+      }
+    }
+    return merged;
+  }
+
+  private getMcpCredential(mcpName: string): McpCredential | undefined {
+    if (this.mcpCredentials[mcpName]) return this.mcpCredentials[mcpName];
+    const safe = mcpName.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+    return this.mcpCredentials[safe];
+  }
+
+  static encodeMcpAuthHeader(cred: McpCredential): string {
+    return Buffer.from(JSON.stringify(cred), 'utf-8').toString('base64');
   }
 
   /**
@@ -474,6 +547,11 @@ export class ArmorIQClient {
 
     if (this.apiKey) {
       headers['X-API-Key'] = this.apiKey;
+    }
+
+    const mcpCred = this.getMcpCredential(mcp);
+    if (mcpCred) {
+      headers['X-Armoriq-MCP-Auth'] = ArmorIQClient.encodeMcpAuthHeader(mcpCred);
     }
 
     // Send CSRG token structure

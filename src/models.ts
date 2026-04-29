@@ -255,6 +255,31 @@ export interface ApprovedDelegation {
 }
 
 /**
+ * A flat tool-call as surfaced by most LLM frameworks.
+ * Used by plan_builder helpers and ArmorIQSession.startPlan.
+ */
+export interface ToolCall {
+  name: string;
+  args?: Record<string, unknown>;
+}
+
+/**
+ * Per-MCP credentials forwarded to the proxy via the X-Armoriq-MCP-Auth header.
+ * The discriminated union mirrors the Python SDK's McpCredential shape so
+ * the JSON env blob (ARMORIQ_MCP_CREDENTIALS) is portable across SDKs.
+ */
+export type McpCredential =
+  | { authType: 'bearer'; token: string }
+  | { authType: 'api_key'; apiKey: string; headerName?: string }
+  | { authType: 'basic'; username: string; password: string }
+  | { authType: 'none' };
+
+/**
+ * Map of MCP identifier (or upper-snake "safe name") to credential.
+ */
+export type McpCredentialMap = Record<string, McpCredential>;
+
+/**
  * SDK configuration.
  */
 export interface SDKConfig {
@@ -280,4 +305,9 @@ export interface SDKConfig {
   apiKey?: string;
   /** Use production endpoints */
   useProduction: boolean;
+  /**
+   * Per-MCP credentials. Merged with ARMORIQ_MCP_CREDENTIALS env JSON and
+   * ARMORIQ_MCP_<SAFE_NAME>_* per-MCP env vars; constructor option wins.
+   */
+  mcpCredentials?: McpCredentialMap;
 }
