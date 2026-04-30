@@ -80,6 +80,7 @@ export class ArmorIQClient {
   private contextId: string;
   private apiKey: string;
   private timeout: number;
+  private maxRetries: number;
   private verifySsl: boolean;
   private httpClient: AxiosInstance;
   private tokenCache: Map<string, IntentToken>;
@@ -179,6 +180,7 @@ export class ArmorIQClient {
 
     this.proxyEndpoints = options.proxyEndpoints || {};
     this.timeout = options.timeout || 30000;
+    this.maxRetries = (options as any).maxRetries ?? 3;
     this.verifySsl = options.verifySsl ?? true;
 
     // Initialize HTTP client
@@ -426,6 +428,66 @@ export class ArmorIQClient {
     return Buffer.from(JSON.stringify(cred), 'utf-8').toString('base64');
   }
 
+  // ─── Retry helpers ─────────────────────────────────────────────────
+  // Mirrors armoriq_sdk/client.py:_retry_post. Exponential backoff
+  // (1s → 4s capped) on 5xx + network errors only — 4xx passes through
+  // unchanged so callers can still distinguish policy denials from
+  // transport flakes. The same Idempotency-Key is reused across retries
+  // so the backend can dedupe.
+
+  private shouldRetry(status: number | undefined): boolean {
+    if (status === undefined) return true; // network error
+    return status >= 500;
+  }
+
+  /**
+   * POST with exponential backoff. Reuses the same Idempotency-Key
+   * across retries so the backend can dedupe on its side.
+   * @internal
+   */
+  async _retryPost(
+    url: string,
+    body: unknown,
+    options: {
+      headers?: Record<string, string>;
+      timeout?: number;
+      idempotencyKey?: string;
+    } = {},
+  ): Promise<import('axios').AxiosResponse> {
+    const merged: Record<string, string> = { ...(options.headers ?? {}) };
+    if (options.idempotencyKey && !merged['Idempotency-Key']) {
+      merged['Idempotency-Key'] = options.idempotencyKey;
+    }
+    const attempts = Math.max(1, this.maxRetries + 1);
+    let lastErr: unknown;
+    let lastResponse: import('axios').AxiosResponse | undefined;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        const response = await this.httpClient.post(url, body, {
+          headers: merged,
+          timeout: options.timeout ?? this.timeout,
+        });
+        if (!this.shouldRetry(response.status)) return response;
+        lastResponse = response;
+      } catch (e: any) {
+        // axios throws on network errors when validateStatus doesn't catch them;
+        // ECONNREFUSED / ETIMEDOUT / socket-hangup all surface as Error here.
+        const code = e?.code;
+        if (code === 'ECONNREFUSED' || code === 'ETIMEDOUT' || code === 'ECONNRESET' || !e?.response) {
+          lastErr = e;
+        } else {
+          throw e;
+        }
+      }
+      if (i < attempts - 1) {
+        const backoff = Math.min(1000 * 2 ** i, 4000);
+        await new Promise((r) => setTimeout(r, backoff));
+      }
+    }
+    if (lastResponse) return lastResponse;
+    throw lastErr ?? new Error('retry loop exited without a result');
+  }
+
   /**
    * Validate API key with the proxy server.
    */
@@ -528,9 +590,12 @@ export class ArmorIQClient {
     };
 
     try {
-      const response = await this.httpClient.post(`${this.backendEndpoint}/iap/sdk/token`, payload, {
+      // Token issuance is idempotent on the backend (planHash-keyed),
+      // so retrying a 5xx with the same Idempotency-Key is safe.
+      const response = await this._retryPost(`${this.backendEndpoint}/iap/sdk/token`, payload, {
         headers: { 'X-API-Key': this.apiKey },
         timeout: 30000,
+        idempotencyKey: crypto.randomBytes(16).toString('hex'),
       });
 
       if (response.status >= 400) {
@@ -1168,12 +1233,18 @@ export class ArmorIQClient {
 
   /**
    * Mark a delegation as executed.
+   *
+   * Idempotent on the backend (delegationId-keyed), so a stable
+   * Idempotency-Key derived from the delegation_id is safe to retry.
    */
   async markDelegationExecuted(userEmail: string, delegationId: string): Promise<void> {
-    await this.httpClient.post(
+    await this._retryPost(
       `${this.backendEndpoint}/delegation/mark-executed`,
       { delegationId },
-      { headers: { 'X-API-Key': this.apiKey, 'X-User-Email': userEmail } },
+      {
+        headers: { 'X-API-Key': this.apiKey, 'X-User-Email': userEmail },
+        idempotencyKey: `mark-exec:${delegationId}`,
+      },
     );
   }
 
@@ -1186,14 +1257,20 @@ export class ArmorIQClient {
 
   /**
    * Update an intent plan's status.
+   *
+   * Status transitions are idempotent — retrying with the same
+   * `planId:status` key is safe.
    * Valid statuses: 'active', 'completed', 'failed', 'expired'
    */
   async updatePlanStatus(planId: string, status: string): Promise<void> {
     try {
-      await this.httpClient.post(
+      await this._retryPost(
         `${this.backendEndpoint}/iap/plans/${planId}/status`,
         { status },
-        { headers: { 'X-API-Key': this.apiKey } },
+        {
+          headers: { 'X-API-Key': this.apiKey },
+          idempotencyKey: `plan-status:${planId}:${status}`,
+        },
       );
       console.log(`Plan ${planId} status updated to ${status}`);
     } catch (error: any) {
