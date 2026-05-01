@@ -6,7 +6,7 @@
  * tool invocation with built-in security.
  * 
  * @author ArmorIQ Team <license@armoriq.io>
- * @version 0.2.6
+ * @version 0.3.0
  */
 
 export { ArmorIQClient, ArmorIQUserScope } from './client';
