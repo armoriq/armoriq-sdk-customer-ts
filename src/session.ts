@@ -31,6 +31,16 @@ export interface SessionOptions {
   validitySeconds?: number;
   llm?: string;
   mode?: SessionMode;
+  /**
+   * Per-call HTTP timeout for `enforceSdk` and `enforce` (proxy) checks.
+   * Default 10000ms. Bump for staging deployments where the backend is
+   * slow under load (e.g. public-IP DB without connection pooling).
+   */
+  checkTimeoutMs?: number;
+  /**
+   * HTTP timeout for `report()` audit POSTs. Default 5000ms.
+   */
+  reportTimeoutMs?: number;
 }
 
 export interface EnforceResult {
@@ -60,6 +70,8 @@ export class ArmorIQSession {
   private validitySeconds: number;
   private llm: string;
   private mode: SessionMode;
+  private checkTimeoutMs: number;
+  private reportTimeoutMs: number;
   private stepIndex = 0;
   private currentPlanHash?: string;
   private currentToken?: IntentToken;
@@ -74,6 +86,8 @@ export class ArmorIQSession {
     this.validitySeconds = o.validitySeconds ?? 3600;
     this.llm = o.llm ?? 'agent';
     this.mode = o.mode ?? 'local';
+    this.checkTimeoutMs = o.checkTimeoutMs ?? 10000;
+    this.reportTimeoutMs = o.reportTimeoutMs ?? 5000;
   }
 
   // ─── Plan capture ──────────────────────────────────────────────
@@ -279,7 +293,7 @@ export class ArmorIQSession {
         },
         {
           headers: { 'X-API-Key': internals.apiKey, 'Content-Type': 'application/json' },
-          timeout: 10000,
+          timeout: this.checkTimeoutMs,
         },
       );
       const data = response.data ?? {};
@@ -356,7 +370,7 @@ export class ArmorIQSession {
         payload,
         {
           headers: { 'X-API-Key': internals.apiKey, 'Content-Type': 'application/json' },
-          timeout: 10000,
+          timeout: this.checkTimeoutMs,
         },
       );
       if (response.status === 403) {
@@ -458,7 +472,7 @@ export class ArmorIQSession {
         },
         {
           headers: { 'X-API-Key': internals.apiKey, 'Content-Type': 'application/json' },
-          timeout: 5000,
+          timeout: this.reportTimeoutMs,
         },
       );
     } catch (e) {
