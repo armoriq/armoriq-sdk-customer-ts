@@ -77,6 +77,6 @@ export {
   DEFAULT_PROXY_URL,
 } from './config';
 
-export const VERSION = '0.2.6';
+export const VERSION = '0.3.0';
 export const AUTHOR = 'ArmorIQ Team';
 export const EMAIL = 'license@armoriq.io';

@@ -185,7 +185,7 @@ export class ArmorIQClient {
 
     // Initialize HTTP client
     const headers: Record<string, string> = {
-      'User-Agent': `ArmorIQ-SDK-TS/0.2.6 (agent=${this.agentId})`,
+      'User-Agent': `ArmorIQ-SDK-TS/0.3.0 (agent=${this.agentId})`,
     };
     if (this.apiKey) {
       headers['Authorization'] = `Bearer ${this.apiKey}`;
