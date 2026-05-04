@@ -340,9 +340,24 @@ export class ArmorIQADKBundle {
       afterToolCallback: agent.afterToolCallback,
     };
     agent.afterModelCallback = (...args: any[]) => this.afterModel(args[0], args[1]);
-    agent.beforeToolCallback = (tool: any, args: any, ctx?: any) => this.beforeTool(tool, args, ctx);
-    agent.afterToolCallback = (tool: any, args: any, ctx?: any, response?: any) =>
-      this.afterTool(tool, args, ctx, response);
+    agent.beforeToolCallback = (...args: any[]) => {
+      const a = args[0];
+      // Require `tool` specifically — anything else means we're in legacy
+      // positional mode and a is the BaseTool itself.
+      if (a && typeof a === 'object' && 'tool' in a) {
+        return this.beforeTool(a.tool, a.args, a.context ?? a.toolContext);
+      }
+      return this.beforeTool(a, args[1], args[2]);
+    };
+    agent.afterToolCallback = (...args: any[]) => {
+      const a = args[0];
+      // Require `tool` specifically — anything else means we're in legacy
+      // positional mode and a is the BaseTool itself.
+      if (a && typeof a === 'object' && 'tool' in a) {
+        return this.afterTool(a.tool, a.args, a.context ?? a.toolContext, a.response);
+      }
+      return this.afterTool(a, args[1], args[2], args[3]);
+    };
     return this;
   }
 
