@@ -128,18 +128,21 @@ export class PolicyBlockedException extends ArmorIQException {
   public enforcementAction?: string;
   public reason?: string;
   public metadata?: Record<string, any>;
+  public matchedPolicy?: string;
 
   constructor(
     message: string,
     enforcementAction?: string,
     reason?: string,
-    metadata?: Record<string, any>
+    metadata?: Record<string, any>,
+    matchedPolicy?: string
   ) {
     super(message);
     this.name = 'PolicyBlockedException';
     this.enforcementAction = enforcementAction;
     this.reason = reason;
     this.metadata = metadata;
+    this.matchedPolicy = matchedPolicy;
     Object.setPrototypeOf(this, PolicyBlockedException.prototype);
   }
 }
@@ -150,16 +153,19 @@ export class PolicyBlockedException extends ArmorIQException {
 export class PolicyHoldException extends ArmorIQException {
   public delegationContext?: Record<string, any>;
   public metadata?: Record<string, any>;
+  public matchedPolicy?: string;
 
   constructor(
     message: string,
     delegationContext?: Record<string, any>,
-    metadata?: Record<string, any>
+    metadata?: Record<string, any>,
+    matchedPolicy?: string
   ) {
     super(message);
     this.name = 'PolicyHoldException';
     this.delegationContext = delegationContext;
     this.metadata = metadata;
+    this.matchedPolicy = matchedPolicy;
     Object.setPrototypeOf(this, PolicyHoldException.prototype);
   }
 }

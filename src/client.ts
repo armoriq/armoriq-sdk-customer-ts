@@ -17,6 +17,8 @@ import {
   DelegationRequestResult,
   ApprovedDelegation,
   HoldInfo,
+  McpCredential,
+  McpCredentialMap,
 } from './models';
 import {
   InvalidTokenException,
@@ -28,6 +30,7 @@ import {
   PolicyBlockedException,
   PolicyHoldException,
 } from './exceptions';
+import { resolveEndpoint, ARMORIQ_ENV } from './_build_env';
 
 /**
  * Main client for ArmorIQ SDK.
@@ -38,6 +41,12 @@ import {
  * - MCP action invocation
  * - Agent delegation
  */
+function normalizeMatchedPolicy(raw: any): string | undefined {
+  const v = raw?.matched_policy ?? raw?.matchedPolicy;
+  if (!v) return undefined;
+  return typeof v === 'object' ? v.name : v;
+}
+
 export class ArmorIQClient {
   // Production endpoints (default) - ArmorIQ platform
   private static readonly DEFAULT_IAP_ENDPOINT = 'https://iap.armoriq.ai';
@@ -54,10 +63,8 @@ export class ArmorIQClient {
   private static readonly ARMORCLAW_PROXY_ENDPOINT = 'https://customer-proxy.armoriq.ai';
   private static readonly ARMORCLAW_BACKEND_ENDPOINT = 'https://armorclaw-api.armoriq.ai';
 
-  // Local development endpoints - ArmorIQ platform
-  private static readonly LOCAL_IAP_ENDPOINT = 'http://127.0.0.1:8000';
-  private static readonly LOCAL_PROXY_ENDPOINT = 'http://127.0.0.1:3001';
-  private static readonly LOCAL_BACKEND_ENDPOINT = 'http://127.0.0.1:3000';
+  // Local development endpoints for the ArmorIQ platform live in
+  // _build_env.ts under ENDPOINTS.local — resolved via resolveEndpoint().
 
   // Local development endpoints - ArmorClaw standalone
   private static readonly LOCAL_ARMORCLAW_IAP_ENDPOINT = 'http://127.0.0.1:8080';
@@ -78,51 +85,81 @@ export class ArmorIQClient {
   private httpClient: AxiosInstance;
   private tokenCache: Map<string, IntentToken>;
   private metadataCache: Map<string, MCPSemanticMetadata>;
+  private mcpCredentials: McpCredentialMap;
+  private bootstrapCache: Record<string, any> | null = null;
+  private userCache: Map<string, { data: Record<string, any>; expiresAt: number }> = new Map();
+  private userContextTtlSeconds: number = 300;
+  /**
+   * When set by ArmorIQUserScope, all enforcement / token minting calls
+   * are tagged with this email. Read by session and report paths.
+   */
+  public userEmailOverride?: string;
 
   constructor(options: Partial<SDKConfig> & { apiKey?: string; useProduction?: boolean } = {}) {
-    // Determine if using production based on environment
-    const envMode = process.env.ARMORIQ_ENV?.toLowerCase() || 'production';
-    const useProd = (options.useProduction ?? true) && envMode === 'production';
+    // `useProduction: false` is a legacy escape hatch for local dev — treat
+    // it as ARMORIQ_ENV=local unless the caller set the env var explicitly.
+    if (options.useProduction === false && !process.env.ARMORIQ_ENV) {
+      process.env.ARMORIQ_ENV = 'local';
+    }
+    const envMode = (process.env.ARMORIQ_ENV || '').toLowerCase();
+    const isLocal = envMode === 'local';
 
     // Resolve API key early to determine product routing
     const resolvedApiKey = options.apiKey || process.env.ARMORIQ_API_KEY || '';
     const isArmorClaw = resolvedApiKey.startsWith('ak_claw_');
 
     // Route endpoints based on API key prefix (Stripe pattern)
-    // ak_claw_ → ArmorClaw standalone, ak_live_ → ArmorIQ platform, ak_test_ → sandbox
+    // ak_claw_ → ArmorClaw standalone; ak_live_ / ak_test_ → ArmorIQ platform.
+    // For ArmorIQ: production / staging / local URLs all come from
+    // resolveEndpoint — which reads ARMORIQ_ENV and falls back to the
+    // branch-baked constant in _build_env.ts.
     this.iapEndpoint =
       options.iapEndpoint ||
       process.env.IAP_ENDPOINT ||
       (isArmorClaw
-        ? (useProd ? ArmorIQClient.ARMORCLAW_IAP_ENDPOINT : ArmorIQClient.LOCAL_ARMORCLAW_IAP_ENDPOINT)
-        : (useProd ? ArmorIQClient.DEFAULT_IAP_ENDPOINT : ArmorIQClient.LOCAL_IAP_ENDPOINT));
+        ? (isLocal ? ArmorIQClient.LOCAL_ARMORCLAW_IAP_ENDPOINT : ArmorIQClient.ARMORCLAW_IAP_ENDPOINT)
+        : resolveEndpoint('iap'));
 
     this.defaultProxyEndpoint =
       options.proxyEndpoint ||
       process.env.PROXY_ENDPOINT ||
       (isArmorClaw
-        ? (useProd ? ArmorIQClient.ARMORCLAW_PROXY_ENDPOINT : ArmorIQClient.LOCAL_ARMORCLAW_PROXY_ENDPOINT)
-        : (useProd ? ArmorIQClient.DEFAULT_PROXY_ENDPOINT : ArmorIQClient.LOCAL_PROXY_ENDPOINT));
+        ? (isLocal ? ArmorIQClient.LOCAL_ARMORCLAW_PROXY_ENDPOINT : ArmorIQClient.ARMORCLAW_PROXY_ENDPOINT)
+        : resolveEndpoint('proxy'));
 
     this.backendEndpoint =
       options.backendEndpoint ||
       process.env.BACKEND_ENDPOINT ||
       (isArmorClaw
-        ? (useProd ? ArmorIQClient.ARMORCLAW_BACKEND_ENDPOINT : ArmorIQClient.LOCAL_ARMORCLAW_BACKEND_ENDPOINT)
-        : (useProd ? ArmorIQClient.DEFAULT_BACKEND_ENDPOINT : ArmorIQClient.LOCAL_BACKEND_ENDPOINT));
+        ? (isLocal ? ArmorIQClient.LOCAL_ARMORCLAW_BACKEND_ENDPOINT : ArmorIQClient.ARMORCLAW_BACKEND_ENDPOINT)
+        : resolveEndpoint('backend'));
 
     // Load user/agent identifiers
     this.userId = options.userId || process.env.USER_ID || '';
     this.agentId = options.agentId || process.env.AGENT_ID || '';
     this.contextId = options.contextId || process.env.CONTEXT_ID || 'default';
+    // API key resolution order: explicit param → env var → credentials file → empty
     this.apiKey = options.apiKey || process.env.ARMORIQ_API_KEY || '';
+    if (!this.apiKey) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { loadCredentials } = require('./credentials');
+        const creds = loadCredentials();
+        if (creds?.apiKey) {
+          this.apiKey = creds.apiKey;
+        }
+      } catch {
+        // credentials module not available (e.g. bundled build) — ignore
+      }
+    }
 
     // Validate required config
     if (!this.apiKey) {
       throw new ConfigurationException(
         'API key is required for Customer SDK. ' +
-          'Set ARMORIQ_API_KEY environment variable or pass apiKey parameter. ' +
-          'Get your API key from https://platform.armoriq.ai/dashboard/api-keys'
+          'Install the ArmorIQ CLI (`pip install armoriq-sdk`) and run `armoriq login` to authenticate, ' +
+          'or set ARMORIQ_API_KEY, or pass apiKey parameter. ' +
+          'Get your API key from https://dev.armoriq.ai'
       );
     }
 
@@ -143,12 +180,12 @@ export class ArmorIQClient {
 
     this.proxyEndpoints = options.proxyEndpoints || {};
     this.timeout = options.timeout || 30000;
-    this.maxRetries = options.maxRetries || 3;
+    this.maxRetries = (options as any).maxRetries ?? 3;
     this.verifySsl = options.verifySsl ?? true;
 
     // Initialize HTTP client
     const headers: Record<string, string> = {
-      'User-Agent': `ArmorIQ-SDK-TS/0.2.6 (agent=${this.agentId})`,
+      'User-Agent': `ArmorIQ-SDK-TS/0.3.0 (agent=${this.agentId})`,
     };
     if (this.apiKey) {
       headers['Authorization'] = `Bearer ${this.apiKey}`;
@@ -162,9 +199,11 @@ export class ArmorIQClient {
 
     this.tokenCache = new Map();
     this.metadataCache = new Map();
+    this.mcpCredentials = ArmorIQClient.resolveMcpCredentials(options.mcpCredentials);
 
+    const mode = (process.env.ARMORIQ_ENV || '').toLowerCase() || ARMORIQ_ENV;
     console.log(
-      `ArmorIQ SDK initialized: mode=${useProd ? 'production' : 'development'}, ` +
+      `ArmorIQ SDK initialized: mode=${mode}, ` +
         `user=${this.userId}, agent=${this.agentId}, ` +
         `iap=${this.iapEndpoint}, proxy=${this.defaultProxyEndpoint}, ` +
         `backend=${this.backendEndpoint}, ` +
@@ -195,6 +234,258 @@ export class ArmorIQClient {
    */
   get proxyEndpoint(): string {
     return this.defaultProxyEndpoint;
+  }
+
+  /**
+   * Internal accessor for ArmorIQSession and other in-package consumers.
+   * Not part of the public API.
+   * @internal
+   */
+  _sessionInternals() {
+    return {
+      apiKey: this.apiKey,
+      backendEndpoint: this.backendEndpoint,
+      defaultProxyEndpoint: this.defaultProxyEndpoint,
+      httpClient: this.httpClient,
+      userId: this.userId,
+    };
+  }
+
+  /**
+   * Start a session bound to this client. Mirrors PY ArmorIQClient.start_session.
+   */
+  startSession(opts?: import('./session').SessionOptions): import('./session').ArmorIQSession {
+    // Lazy require to keep client.ts free of a hard dependency on session.ts
+    // (and to avoid an import cycle with ArmorIQUserScope).
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { ArmorIQSession } = require('./session') as typeof import('./session');
+    return new ArmorIQSession(this, opts);
+  }
+
+  // ─── Bootstrap ────────────────────────────────────────────────────
+  // Mirrors armoriq_sdk/client.py:bootstrap. Resolves agent identity +
+  // registered MCPs + tool→MCP map from the API key. Cached for the
+  // lifetime of the client; refreshBootstrap() forces a re-fetch.
+
+  async bootstrap(): Promise<Record<string, any>> {
+    if (this.bootstrapCache) return this.bootstrapCache;
+    const resp = await this.httpClient.post(
+      `${this.backendEndpoint}/iap/sdk/bootstrap`,
+      {},
+      { headers: { 'X-API-Key': this.apiKey, 'Content-Type': 'application/json' } },
+    );
+    if (resp.status >= 400) {
+      throw new ConfigurationException(
+        `sdk/bootstrap failed: ${resp.status} ${typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data)}`,
+      );
+    }
+    this.bootstrapCache = resp.data;
+    return resp.data;
+  }
+
+  async refreshBootstrap(): Promise<Record<string, any>> {
+    this.bootstrapCache = null;
+    return this.bootstrap();
+  }
+
+  // ─── Multi-org / user scope ──────────────────────────────────────
+  // Mirrors armoriq_sdk/client.py:resolve_user / for_user.
+
+  async resolveUser(userEmail: string): Promise<Record<string, any>> {
+    const key = userEmail.trim().toLowerCase();
+    const hit = this.userCache.get(key);
+    if (hit && hit.expiresAt > Date.now() / 1000) {
+      return hit.data;
+    }
+    const resp = await this.httpClient.post(
+      `${this.backendEndpoint}/iap/sdk/resolve-user`,
+      { userEmail: key },
+      { headers: { 'X-API-Key': this.apiKey, 'Content-Type': 'application/json' } },
+    );
+    if (resp.status >= 400) {
+      throw new ConfigurationException(
+        `sdk/resolve-user failed for ${key}: ${resp.status} ${typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data)}`,
+      );
+    }
+    this.userCache.set(key, {
+      data: resp.data,
+      expiresAt: Date.now() / 1000 + this.userContextTtlSeconds,
+    });
+    return resp.data;
+  }
+
+  invalidateUser(userEmail: string): void {
+    this.userCache.delete(userEmail.trim().toLowerCase());
+  }
+
+  forUser(userEmail: string): ArmorIQUserScope {
+    return new ArmorIQUserScope(this, userEmail);
+  }
+
+  // ─── MCP credential resolution ─────────────────────────────────────
+  // Mirrors armoriq_sdk/client.py:_resolve_mcp_credentials so the same
+  // env JSON / per-MCP env vars work in both SDKs.
+  //   1. ARMORIQ_MCP_CREDENTIALS (JSON object {mcpName: cred})
+  //   2. ARMORIQ_MCP_<SAFE_NAME>_AUTH_TYPE plus matching value vars
+  //   3. constructor option `mcpCredentials` — wins.
+
+  /**
+   * Construct an ArmorIQClient from an armoriq.yaml file. Mirrors PY
+   * ArmorIQClient.from_config — reads YAML, expands $VAR / ${VAR} env refs,
+   * builds the SDKConfig, and returns a ready client.
+   */
+  static fromConfig(filePath: string = 'armoriq.yaml'): ArmorIQClient {
+    // Lazy require to avoid making js-yaml a hard dependency for callers
+    // that never use the YAML loader.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { loadArmorIQConfig, resolveEnvReferences } =
+      require('./config') as typeof import('./config');
+    const cfg = resolveEnvReferences(loadArmorIQConfig(filePath));
+
+    const proxyEndpoints: Record<string, string> = {};
+    const mcpCredentials: Record<string, McpCredential> = {};
+    for (const s of cfg.mcp_servers) {
+      proxyEndpoints[s.id] = s.url;
+      if (s.auth.type === 'bearer' && s.auth.token) {
+        mcpCredentials[s.id] = { authType: 'bearer', token: s.auth.token };
+      } else if (s.auth.type === 'api_key' && s.auth.api_key) {
+        mcpCredentials[s.id] = { authType: 'api_key', apiKey: s.auth.api_key };
+      } else if (s.auth.type === 'none') {
+        mcpCredentials[s.id] = { authType: 'none' };
+      }
+    }
+
+    return new ArmorIQClient({
+      apiKey: cfg.identity.api_key,
+      userId: cfg.identity.user_id,
+      agentId: cfg.identity.agent_id,
+      proxyEndpoint: cfg.proxy.url,
+      timeout: cfg.proxy.timeout * 1000,
+      proxyEndpoints,
+      mcpCredentials,
+    });
+  }
+
+  static resolveMcpCredentials(
+    fromOptions?: McpCredentialMap,
+  ): McpCredentialMap {
+    const merged: McpCredentialMap = {};
+
+    const jsonRaw = process.env.ARMORIQ_MCP_CREDENTIALS;
+    if (jsonRaw) {
+      try {
+        const parsed = JSON.parse(jsonRaw);
+        if (parsed && typeof parsed === 'object') {
+          for (const [k, v] of Object.entries(parsed)) {
+            merged[k] = v as McpCredential;
+          }
+        }
+      } catch (e) {
+        console.warn(`Failed to parse ARMORIQ_MCP_CREDENTIALS as JSON: ${(e as Error).message}`);
+      }
+    }
+
+    const safeNames = new Set<string>();
+    for (const key of Object.keys(process.env)) {
+      const m = /^ARMORIQ_MCP_(.+)_AUTH_TYPE$/.exec(key);
+      if (m) safeNames.add(m[1]);
+    }
+    for (const safe of safeNames) {
+      const authType = (process.env[`ARMORIQ_MCP_${safe}_AUTH_TYPE`] || '').toLowerCase();
+      let cred: McpCredential | undefined;
+      if (authType === 'bearer') {
+        const token = process.env[`ARMORIQ_MCP_${safe}_TOKEN`];
+        if (token) cred = { authType: 'bearer', token };
+      } else if (authType === 'api_key') {
+        const apiKey = process.env[`ARMORIQ_MCP_${safe}_API_KEY`];
+        const headerName = process.env[`ARMORIQ_MCP_${safe}_HEADER_NAME`];
+        if (apiKey) cred = headerName ? { authType: 'api_key', apiKey, headerName } : { authType: 'api_key', apiKey };
+      } else if (authType === 'basic') {
+        const username = process.env[`ARMORIQ_MCP_${safe}_USERNAME`];
+        const password = process.env[`ARMORIQ_MCP_${safe}_PASSWORD`];
+        if (username && password) cred = { authType: 'basic', username, password };
+      } else if (authType === 'none') {
+        cred = { authType: 'none' };
+      }
+      if (cred) merged[safe] = cred;
+    }
+
+    if (fromOptions) {
+      for (const [k, v] of Object.entries(fromOptions)) {
+        merged[k] = v;
+      }
+    }
+    return merged;
+  }
+
+  private getMcpCredential(mcpName: string): McpCredential | undefined {
+    if (this.mcpCredentials[mcpName]) return this.mcpCredentials[mcpName];
+    const safe = mcpName.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+    return this.mcpCredentials[safe];
+  }
+
+  static encodeMcpAuthHeader(cred: McpCredential): string {
+    return Buffer.from(JSON.stringify(cred), 'utf-8').toString('base64');
+  }
+
+  // ─── Retry helpers ─────────────────────────────────────────────────
+  // Mirrors armoriq_sdk/client.py:_retry_post. Exponential backoff
+  // (1s → 4s capped) on 5xx + network errors only — 4xx passes through
+  // unchanged so callers can still distinguish policy denials from
+  // transport flakes. The same Idempotency-Key is reused across retries
+  // so the backend can dedupe.
+
+  private shouldRetry(status: number | undefined): boolean {
+    if (status === undefined) return true; // network error
+    return status >= 500;
+  }
+
+  /**
+   * POST with exponential backoff. Reuses the same Idempotency-Key
+   * across retries so the backend can dedupe on its side.
+   * @internal
+   */
+  async _retryPost(
+    url: string,
+    body: unknown,
+    options: {
+      headers?: Record<string, string>;
+      timeout?: number;
+      idempotencyKey?: string;
+    } = {},
+  ): Promise<import('axios').AxiosResponse> {
+    const merged: Record<string, string> = { ...(options.headers ?? {}) };
+    if (options.idempotencyKey && !merged['Idempotency-Key']) {
+      merged['Idempotency-Key'] = options.idempotencyKey;
+    }
+    const attempts = Math.max(1, this.maxRetries + 1);
+    let lastErr: unknown;
+    let lastResponse: import('axios').AxiosResponse | undefined;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        const response = await this.httpClient.post(url, body, {
+          headers: merged,
+          timeout: options.timeout ?? this.timeout,
+        });
+        if (!this.shouldRetry(response.status)) return response;
+        lastResponse = response;
+      } catch (e: any) {
+        // axios throws on network errors when validateStatus doesn't catch them;
+        // ECONNREFUSED / ETIMEDOUT / socket-hangup all surface as Error here.
+        const code = e?.code;
+        if (code === 'ECONNREFUSED' || code === 'ETIMEDOUT' || code === 'ECONNRESET' || !e?.response) {
+          lastErr = e;
+        } else {
+          throw e;
+        }
+      }
+      if (i < attempts - 1) {
+        const backoff = Math.min(1000 * 2 ** i, 4000);
+        await new Promise((r) => setTimeout(r, backoff));
+      }
+    }
+    if (lastResponse) return lastResponse;
+    throw lastErr ?? new Error('retry loop exited without a result');
   }
 
   /**
@@ -299,9 +590,12 @@ export class ArmorIQClient {
     };
 
     try {
-      const response = await this.httpClient.post(`${this.backendEndpoint}/iap/sdk/token`, payload, {
+      // Token issuance is idempotent on the backend (planHash-keyed),
+      // so retrying a 5xx with the same Idempotency-Key is safe.
+      const response = await this._retryPost(`${this.backendEndpoint}/iap/sdk/token`, payload, {
         headers: { 'X-API-Key': this.apiKey },
         timeout: 30000,
+        idempotencyKey: crypto.randomBytes(16).toString('hex'),
       });
 
       if (response.status >= 400) {
@@ -428,7 +722,10 @@ export class ArmorIQClient {
       tool: action,
       params: invokeParams,
       arguments: invokeParams,
-      intent_token: intentToken.rawToken,
+      intent_token: {
+        ...intentToken.rawToken,
+        policy_validation: intentToken.policyValidation,
+      },
       merkle_proof: merkleProof,
       plan: intentToken.rawToken?.plan,
       _iam_context: iamContext,
@@ -446,6 +743,11 @@ export class ArmorIQClient {
 
     if (this.apiKey) {
       headers['X-API-Key'] = this.apiKey;
+    }
+
+    const mcpCred = this.getMcpCredential(mcp);
+    if (mcpCred) {
+      headers['X-Armoriq-MCP-Auth'] = ArmorIQClient.encodeMcpAuthHeader(mcpCred);
     }
 
     // Send CSRG token structure
@@ -890,10 +1192,11 @@ export class ArmorIQClient {
    * Create a delegation request on the backend.
    */
   async createDelegationRequest(params: DelegationRequestParams): Promise<DelegationRequestResult> {
+    const idempotencyKey = `deleg-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const response = await this.httpClient.post(
       `${this.backendEndpoint}/delegation/request`,
       params,
-      { headers: { 'X-API-Key': this.apiKey, 'X-User-Email': params.requesterEmail } },
+      { headers: { 'X-API-Key': this.apiKey, 'X-User-Email': params.requesterEmail, 'Idempotency-Key': idempotencyKey } },
     );
 
     if (response.status >= 400) {
@@ -930,12 +1233,18 @@ export class ArmorIQClient {
 
   /**
    * Mark a delegation as executed.
+   *
+   * Idempotent on the backend (delegationId-keyed), so a stable
+   * Idempotency-Key derived from the delegation_id is safe to retry.
    */
   async markDelegationExecuted(userEmail: string, delegationId: string): Promise<void> {
-    await this.httpClient.post(
+    await this._retryPost(
       `${this.backendEndpoint}/delegation/mark-executed`,
       { delegationId },
-      { headers: { 'X-API-Key': this.apiKey, 'X-User-Email': userEmail } },
+      {
+        headers: { 'X-API-Key': this.apiKey, 'X-User-Email': userEmail },
+        idempotencyKey: `mark-exec:${delegationId}`,
+      },
     );
   }
 
@@ -948,14 +1257,20 @@ export class ArmorIQClient {
 
   /**
    * Update an intent plan's status.
+   *
+   * Status transitions are idempotent — retrying with the same
+   * `planId:status` key is safe.
    * Valid statuses: 'active', 'completed', 'failed', 'expired'
    */
   async updatePlanStatus(planId: string, status: string): Promise<void> {
     try {
-      await this.httpClient.post(
+      await this._retryPost(
         `${this.backendEndpoint}/iap/plans/${planId}/status`,
         { status },
-        { headers: { 'X-API-Key': this.apiKey } },
+        {
+          headers: { 'X-API-Key': this.apiKey },
+          idempotencyKey: `plan-status:${planId}:${status}`,
+        },
       );
       console.log(`Plan ${planId} status updated to ${status}`);
     } catch (error: any) {
@@ -1002,6 +1317,7 @@ export class ArmorIQClient {
           enforcement.action,
           enforcement.reason,
           enforcement.metadata,
+          normalizeMatchedPolicy(enforcement),
         );
       }
 
@@ -1021,6 +1337,7 @@ export class ArmorIQClient {
             responseData.message || 'Action held for approval',
             responseData.delegation_context,
             enforcement.metadata,
+            normalizeMatchedPolicy(enforcement),
           );
         }
 
@@ -1063,6 +1380,7 @@ export class ArmorIQClient {
             responseData.message || 'Action held for approval (delegation request failed)',
             responseData.delegation_context,
             { ...enforcement.metadata, delegationError: delegationError.message },
+            normalizeMatchedPolicy(enforcement),
           );
         }
 
@@ -1123,5 +1441,33 @@ export class ArmorIQClient {
   close(): void {
     // Axios doesn't require explicit cleanup
     console.log('ArmorIQ SDK client closed');
+  }
+}
+
+/**
+ * User-scoped helper returned by ArmorIQClient.forUser(email).
+ *
+ * Mirrors armoriq_sdk/client.py:ArmorIQUserScope. Tags all token-minting
+ * and enforcement calls with the bound email so multi-user agents route
+ * per-request policies correctly.
+ */
+export class ArmorIQUserScope {
+  public readonly userEmail: string;
+  constructor(private client: ArmorIQClient, userEmail: string) {
+    this.userEmail = userEmail.trim().toLowerCase();
+  }
+
+  startSession(opts?: import('./session').SessionOptions): import('./session').ArmorIQSession {
+    // Lazy import to avoid a cycle between client.ts and session.ts.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { ArmorIQSession } = require('./session') as typeof import('./session');
+    this.client.userEmailOverride = this.userEmail;
+    const session = new ArmorIQSession(this.client, opts);
+    session.userEmail = this.userEmail;
+    return session;
+  }
+
+  async resolve(): Promise<Record<string, any>> {
+    return this.client.resolveUser(this.userEmail);
   }
 }
