@@ -248,7 +248,12 @@ export class ArmorIQClient {
       defaultProxyEndpoint: this.defaultProxyEndpoint,
       httpClient: this.httpClient,
       userId: this.userId,
+      agentId: this.agentId,
     };
+  }
+
+  _setAgentId(agentId: string) {
+    this.agentId = agentId;
   }
 
   /**

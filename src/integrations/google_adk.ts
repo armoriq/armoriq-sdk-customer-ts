@@ -49,6 +49,7 @@ export interface ArmorIQADKOptions {
   validitySeconds?: number;
   mode?: SessionMode;
   llm?: string;
+  agentName?: string;
 }
 
 /**
@@ -81,7 +82,7 @@ export class ArmorIQADK {
       proxyEndpoint: opts.proxyEndpoint ?? opts.backendEndpoint,
       useProduction: opts.useProduction ?? true,
       userId: 'agent',
-      agentId: 'agent',
+      agentId: opts.agentName || 'agent',
     });
     this.defaultMcpName = opts.defaultMcpName;
     this.customParser = opts.toolNameParser;
@@ -94,12 +95,16 @@ export class ArmorIQADK {
     if (!this.bootstrapData) {
       this.bootstrapData = await this.client.bootstrap();
       const orgName = this.bootstrapData.org?.name ?? 'unknown';
+      const agentName = this.bootstrapData.agent?.name;
+      if (agentName) {
+        this.client._setAgentId(agentName);
+      }
       const mcps = Array.isArray(this.bootstrapData.mcps)
         ? this.bootstrapData.mcps.map((m: any) => m.name)
         : [];
       const toolMapSize = Object.keys(this.bootstrapData.toolMap ?? {}).length;
       console.info(
-        `[armoriq] bootstrap: org=${orgName} mcps=${JSON.stringify(mcps)} toolMap=${toolMapSize}`,
+        `[armoriq] bootstrap: org=${orgName} agent=${agentName ?? 'unknown'} mcps=${JSON.stringify(mcps)} toolMap=${toolMapSize}`,
       );
     }
     return this.bootstrapData!;
