@@ -276,6 +276,7 @@ export class ArmorIQSession {
           intent_token: this.currentToken.rawToken,
           policy_snapshot: this.currentToken.policySnapshot,
           user_email: userEmail,
+          agent_id: internals.agentId || undefined,
         },
         {
           headers: { 'X-API-Key': internals.apiKey, 'Content-Type': 'application/json' },
