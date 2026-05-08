@@ -311,7 +311,14 @@ export class ArmorIQSession {
         matchedPolicy: matched,
       };
     } catch (e) {
-      console.warn(`enforceSdk() failed: ${(e as Error).message}. Allowing tool call.`);
+      const msg = (e as Error).message ?? '';
+      const isTransient =
+        /timeout|ECONNREFUSED|ECONNRESET|ETIMEDOUT|socket hang up|5\d\d/i.test(msg);
+      if (isTransient) {
+        console.warn(`enforceSdk() transient error: ${msg}. Keeping hold state.`);
+        return { allowed: false, action: 'hold', reason: `enforce-transient-error: ${msg}` };
+      }
+      console.warn(`enforceSdk() permanent error: ${msg}. Allowing tool call.`);
       return { allowed: true, action: 'allow', reason: 'enforce-unavailable' };
     }
   }
@@ -387,7 +394,14 @@ export class ArmorIQSession {
         matchedPolicy: policyName,
       };
     } catch (e) {
-      console.warn(`enforce() failed: ${(e as Error).message}. Allowing tool call.`);
+      const msg = (e as Error).message ?? '';
+      const isTransient =
+        /timeout|ECONNREFUSED|ECONNRESET|ETIMEDOUT|socket hang up|5\d\d/i.test(msg);
+      if (isTransient) {
+        console.warn(`enforce() transient error: ${msg}. Keeping hold state.`);
+        return { allowed: false, action: 'hold', reason: `enforce-transient-error: ${msg}` };
+      }
+      console.warn(`enforce() permanent error: ${msg}. Allowing tool call.`);
       return { allowed: true, action: 'allow', reason: 'enforce-unavailable' };
     }
   }
