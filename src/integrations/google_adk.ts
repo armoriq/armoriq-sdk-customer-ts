@@ -45,6 +45,7 @@ export interface ArmorIQADKOptions {
   proxyEndpoint?: string;
   useProduction?: boolean;
   defaultMcpName?: string;
+  defaultUserEmail?: string;
   toolNameParser?: ToolNameParser;
   validitySeconds?: number;
   mode?: SessionMode;
@@ -81,7 +82,7 @@ export class ArmorIQADK {
       iapEndpoint: opts.iapEndpoint ?? opts.backendEndpoint,
       proxyEndpoint: opts.proxyEndpoint ?? opts.backendEndpoint,
       useProduction: opts.useProduction ?? true,
-      userId: 'agent',
+      userId: opts.defaultUserEmail || 'agent',
       agentId: opts.agentName || 'agent',
     });
     this.defaultMcpName = opts.defaultMcpName;
