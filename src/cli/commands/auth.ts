@@ -117,12 +117,27 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-export async function cmdLogin(args: { backend?: string; org?: string }): Promise<number> {
+export async function cmdLogin(args: {
+  backend?: string;
+  org?: string;
+  product?: string;
+}): Promise<number> {
   const backend = (args.backend ?? process.env.ARMORIQ_BACKEND_URL ?? backendBase()).replace(
     /\/+$/,
     '',
   );
   const requestedOrg = (args.org ?? '').trim();
+
+  // Product is a soft hint for product-aware browser approval branding
+  // (e.g. "armorclaude", "armorcodex"). Falls back to ARMORIQ_PRODUCT so
+  // older shell scripts that set the env var instead of passing the flag
+  // still work. Canonicalized to lowercase + alphanum/-_ so admin-side
+  // attribution filters (which key off the lowercase slug) always match.
+  const rawProduct = (args.product ?? process.env.ARMORIQ_PRODUCT ?? '').trim();
+  const requestedProduct = rawProduct
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '')
+    .slice(0, 32);
 
   out('');
   out('  \x1b[1m\x1b[36m┃ ArmorIQ Login\x1b[0m');
@@ -132,9 +147,12 @@ export async function cmdLogin(args: { backend?: string; org?: string }): Promis
   const callbackUrl = `http://localhost:${port}/callback`;
   const { server, once: callbackOnce } = startCallbackServer(port);
 
+  const codeBody: Record<string, string> = { callback_url: callbackUrl };
+  if (requestedProduct) codeBody.product = requestedProduct;
+
   let dc: any;
   try {
-    const r = await axios.post(`${backend}/auth/device/code`, { callback_url: callbackUrl }, { timeout: 10000 });
+    const r = await axios.post(`${backend}/auth/device/code`, codeBody, { timeout: 10000 });
     dc = r.data;
   } catch (e) {
     server.close();
@@ -150,6 +168,11 @@ export async function cmdLogin(args: { backend?: string; org?: string }): Promis
   let browserUrl =
     `${verification_uri_complete}${sep}callback=${encodeURIComponent(callbackUrl)}`;
   if (requestedOrg) browserUrl += `&org=${encodeURIComponent(requestedOrg)}`;
+  // Backend already appends product to verification_uri_complete when the
+  // POST body carries it; but we also include it here client-side so an
+  // older backend that ignores the body still surfaces the product to the
+  // browser approval page.
+  if (requestedProduct) browserUrl += `&product=${encodeURIComponent(requestedProduct)}`;
 
   out('  Opening browser...\n');
   openBrowser(browserUrl);
