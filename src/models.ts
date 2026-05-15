@@ -59,9 +59,9 @@ export namespace IntentToken {
 
 /**
  * Represents a captured plan ready for token issuance.
- * 
+ *
  * The plan structure contains only the steps the agent intends to execute.
- * Hash and Merkle tree generation happens later in getIntentToken() 
+ * Hash and Merkle tree generation happens later in getIntentToken()
  * on the CSRG-IAP service side.
  */
 export interface PlanCapture {

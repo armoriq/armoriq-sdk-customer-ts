@@ -29,7 +29,8 @@ async function listKeys(apiKey: string): Promise<ApiKey[]> {
     timeout: 12000,
     validateStatus: () => true,
   });
-  if (response.status === 401) throw new CLIError('API key rejected (401). Try `armoriq login` again.');
+  if (response.status === 401)
+    throw new CLIError('API key rejected (401). Try `armoriq login` again.');
   if (response.status >= 400) throw new CLIError(`Failed to list keys (HTTP ${response.status}).`);
   const data = response.data;
   if (Array.isArray(data)) return data;
@@ -39,15 +40,20 @@ async function listKeys(apiKey: string): Promise<ApiKey[]> {
 
 async function revokeKey(apiKey: string, keyId: string): Promise<void> {
   const url = `${backendBase()}/api-keys/${keyId}/revoke`;
-  const response = await axios.post(url, {}, {
-    headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
-    timeout: 12000,
-    validateStatus: () => true,
-  });
-  if (response.status === 401) throw new CLIError('API key rejected (401). Try `armoriq login` again.');
+  const response = await axios.post(
+    url,
+    {},
+    {
+      headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
+      timeout: 12000,
+      validateStatus: () => true,
+    }
+  );
+  if (response.status === 401)
+    throw new CLIError('API key rejected (401). Try `armoriq login` again.');
   if (response.status >= 400) {
     throw new CLIError(
-      `Failed to revoke key ${keyId} (HTTP ${response.status}): ${response.data?.message ?? ''}`,
+      `Failed to revoke key ${keyId} (HTTP ${response.status}): ${response.data?.message ?? ''}`
     );
   }
 }
@@ -73,7 +79,7 @@ export async function cmdKeysList(): Promise<number> {
   out('');
   if (keys.length > KEY_COUNT_WARN_THRESHOLD) {
     out(
-      `\x1b[33m!\x1b[0m You have ${keys.length} API keys. Consider \`armoriq keys prune\` to revoke unused keys.`,
+      `\x1b[33m!\x1b[0m You have ${keys.length} API keys. Consider \`armoriq keys prune\` to revoke unused keys.`
     );
   }
   appendLog('keys-list', { count: keys.length });

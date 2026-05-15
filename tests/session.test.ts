@@ -75,10 +75,9 @@ describe('ArmorIQSession.enforceLocal', () => {
 
   it('blocks when denied_tools contains the action', () => {
     const s = new ArmorIQSession(client);
-    (s as any).currentToken = tokenWithPolicy(
-      { denied_tools: ['create_payment'] },
-      [{ policyName: 'p', memberRule: { allowedTools: ['*'] } }],
-    );
+    (s as any).currentToken = tokenWithPolicy({ denied_tools: ['create_payment'] }, [
+      { policyName: 'p', memberRule: { allowedTools: ['*'] } },
+    ]);
     (s as any).declaredTools = new Set(['Stripe__create_payment', 'create_payment']);
     (s as any).mcpByAction = new Map([['create_payment', 'Stripe']]);
 

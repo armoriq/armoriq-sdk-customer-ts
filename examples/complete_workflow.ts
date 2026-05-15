@@ -1,7 +1,7 @@
 /**
  * ArmorIQ SDK - Complete Workflow Example
  * ========================================
- * 
+ *
  * Demonstrates a complete workflow with:
  * - Plan creation with multiple steps
  * - Token issuance

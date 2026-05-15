@@ -44,9 +44,9 @@ describe('parseArmorIQConfig', () => {
   });
 
   it('rejects missing identity fields', () => {
-    expect(() =>
-      parseArmorIQConfig({ version: 'v1', identity: { api_key: 'ak' } }),
-    ).toThrow(ArmorIQConfigError);
+    expect(() => parseArmorIQConfig({ version: 'v1', identity: { api_key: 'ak' } })).toThrow(
+      ArmorIQConfigError
+    );
   });
 
   it('rejects an unsupported version', () => {
@@ -54,7 +54,7 @@ describe('parseArmorIQConfig', () => {
       parseArmorIQConfig({
         version: 'v9',
         identity: { api_key: 'ak', user_id: 'u', agent_id: 'a' },
-      }),
+      })
     ).toThrow(/version/);
   });
 
@@ -64,7 +64,7 @@ describe('parseArmorIQConfig', () => {
         version: 'v1',
         identity: { api_key: 'ak', user_id: 'u', agent_id: 'a' },
         mcp_servers: [{ id: 'a', url: 'https://a', auth: { type: 'bearer' } }],
-      }),
+      })
     ).toThrow(/bearer/);
   });
 
@@ -77,7 +77,7 @@ describe('parseArmorIQConfig', () => {
           { id: 'a', url: 'https://a' },
           { id: 'a', url: 'https://b' },
         ],
-      }),
+      })
     ).toThrow(/duplicate/);
   });
 
@@ -99,9 +99,7 @@ describe('resolveEnvReferences', () => {
     const cfg = parseArmorIQConfig({
       version: 'v1',
       identity: { api_key: '$AK', user_id: 'u', agent_id: 'a' },
-      mcp_servers: [
-        { id: 's', url: '$URL_VAR', auth: { type: 'bearer', token: '$TOKEN_VAR' } },
-      ],
+      mcp_servers: [{ id: 's', url: '$URL_VAR', auth: { type: 'bearer', token: '$TOKEN_VAR' } }],
     });
     const resolved = resolveEnvReferences(cfg);
     expect(resolved.identity.api_key).toBe('ak_test_xyz');
@@ -116,9 +114,7 @@ describe('loadArmorIQConfig + saveArmorIQConfig', () => {
     const cfg = parseArmorIQConfig({
       version: 'v1',
       identity: { api_key: 'ak', user_id: 'u', agent_id: 'a' },
-      mcp_servers: [
-        { id: 's', url: 'https://s', auth: { type: 'api_key', api_key: 'k' } },
-      ],
+      mcp_servers: [{ id: 's', url: 'https://s', auth: { type: 'api_key', api_key: 'k' } }],
     });
     saveArmorIQConfig(cfg, tmp);
     try {
@@ -131,8 +127,6 @@ describe('loadArmorIQConfig + saveArmorIQConfig', () => {
   });
 
   it('throws ArmorIQConfigError when the file is missing', () => {
-    expect(() => loadArmorIQConfig('/tmp/does-not-exist-xx.yaml')).toThrow(
-      ArmorIQConfigError,
-    );
+    expect(() => loadArmorIQConfig('/tmp/does-not-exist-xx.yaml')).toThrow(ArmorIQConfigError);
   });
 });

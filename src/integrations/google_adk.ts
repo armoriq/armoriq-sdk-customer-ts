@@ -30,12 +30,7 @@
 
 import { ArmorIQClient, ArmorIQUserScope } from '../client';
 import { ToolCall } from '../models';
-import {
-  ArmorIQSession,
-  ReportOptions,
-  SessionMode,
-  SessionOptions,
-} from '../session';
+import { ArmorIQSession, ReportOptions, SessionMode, SessionOptions } from '../session';
 import { ToolNameParser } from '../plan_builder';
 
 export interface ArmorIQADKOptions {
@@ -59,7 +54,12 @@ export interface ArmorIQADKOptions {
 export interface AdkLikeAgent {
   afterModelCallback?: (...args: any[]) => Promise<unknown> | unknown;
   beforeToolCallback?: (tool: any, args: any, ctx?: any) => Promise<unknown> | unknown;
-  afterToolCallback?: (tool: any, args: any, ctx?: any, response?: any) => Promise<unknown> | unknown;
+  afterToolCallback?: (
+    tool: any,
+    args: any,
+    ctx?: any,
+    response?: any
+  ) => Promise<unknown> | unknown;
 }
 
 /**
@@ -119,7 +119,7 @@ export class ArmorIQADK {
         : [];
       const toolMapSize = Object.keys(this.bootstrapData.toolMap ?? {}).length;
       console.info(
-        `[armoriq] bootstrap: org=${orgName} agent=${resolvedAgent} mcps=${JSON.stringify(mcps)} toolMap=${toolMapSize}`,
+        `[armoriq] bootstrap: org=${orgName} agent=${resolvedAgent} mcps=${JSON.stringify(mcps)} toolMap=${toolMapSize}`
       );
     }
     return this.bootstrapData!;
@@ -239,7 +239,7 @@ export class ArmorIQADKBundle {
 
         if (decision.action === 'hold') {
           console.info(
-            `[armoriq] HELD ${toolName} user=${this.userEmail} reason=${decision.reason} — waiting for approval...`,
+            `[armoriq] HELD ${toolName} user=${this.userEmail} reason=${decision.reason} — waiting for approval...`
           );
           // 30-min default, 3s → 15s exponential, matches PY hold-retry.
           const timeoutMs = 30 * 60 * 1000;
@@ -252,11 +252,7 @@ export class ArmorIQADKBundle {
             await new Promise((r) => setTimeout(r, pollIntervalMs));
             pollIntervalMs = Math.min(pollIntervalMs * 1.5, 15000);
             attempt += 1;
-            const retry = await this.ensureSession().check(
-              toolName,
-              args ?? {},
-              this.userEmail,
-            );
+            const retry = await this.ensureSession().check(toolName, args ?? {}, this.userEmail);
             finalDecision = retry;
             if (retry.allowed) {
               console.info(`[armoriq] APPROVED ${toolName} attempt ${attempt}`);
@@ -306,7 +302,7 @@ export class ArmorIQADKBundle {
         this.blockedTools.add(toolName);
         this.blockedActions.set(toolName, decision.action);
         console.info(
-          `[armoriq] BLOCKED ${toolName} user=${this.userEmail} action=${decision.action} reason=${decision.reason}`,
+          `[armoriq] BLOCKED ${toolName} user=${this.userEmail} action=${decision.action} reason=${decision.reason}`
         );
         return {
           error: `This action is not permitted by your organization's policy${policy}. Reason: ${decision.reason ?? 'policy-blocked'}.`,
@@ -326,7 +322,12 @@ export class ArmorIQADKBundle {
     return null;
   }
 
-  private async afterTool(tool: any, args: any, _toolContext: any, toolResponse: any): Promise<unknown> {
+  private async afterTool(
+    tool: any,
+    args: any,
+    _toolContext: any,
+    toolResponse: any
+  ): Promise<unknown> {
     const toolName: string = tool?.name ?? String(tool);
     try {
       if (this.blockedTools.has(toolName)) {

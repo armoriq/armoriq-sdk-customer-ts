@@ -105,7 +105,7 @@ describe('ArmorIQClient.encodeMcpAuthHeader', () => {
     // Both must produce the exact same bytes.
     const cred: McpCredential = { authType: 'bearer', token: 'abc' };
     expect(ArmorIQClient.encodeMcpAuthHeader(cred)).toBe(
-      Buffer.from('{"authType":"bearer","token":"abc"}').toString('base64'),
+      Buffer.from('{"authType":"bearer","token":"abc"}').toString('base64')
     );
   });
 });

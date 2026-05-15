@@ -40,7 +40,11 @@ Use \`armoriq help <command>\` for command-specific options.
 
 type Argv = string[];
 
-function parseFlag(args: Argv, name: string, hasValue: boolean = true): string | boolean | undefined {
+function parseFlag(
+  args: Argv,
+  name: string,
+  hasValue: boolean = true
+): string | boolean | undefined {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === `--${name}`) {
       if (!hasValue) return true;
@@ -118,7 +122,7 @@ async function run(argv: Argv): Promise<number> {
         `'armoriq ${command}' is not yet implemented in the TypeScript CLI.\n` +
           'Use the Python CLI for now (`pip install armoriq-sdk` then `armoriq ' +
           command +
-          '`), or follow this issue: https://github.com/armoriq/armoriq-sdk-customer-ts/issues/40',
+          '`), or follow this issue: https://github.com/armoriq/armoriq-sdk-customer-ts/issues/40'
       );
       return 1;
     }

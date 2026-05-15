@@ -40,7 +40,9 @@ export function cmdLogs(args: { follow?: boolean }): number {
       if (!trimmed) continue;
       try {
         const event = JSON.parse(trimmed);
-        out(`[${event.timestamp ?? ''}] ${event.event ?? ''}: ${JSON.stringify(event.details ?? {})}`);
+        out(
+          `[${event.timestamp ?? ''}] ${event.event ?? ''}: ${JSON.stringify(event.details ?? {})}`
+        );
       } catch {
         out(trimmed);
       }

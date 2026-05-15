@@ -72,9 +72,7 @@ interface CallbackResult {
   org_id?: string;
 }
 
-function startCallbackServer(
-  port: number,
-): { server: http.Server; once: Promise<CallbackResult> } {
+function startCallbackServer(port: number): { server: http.Server; once: Promise<CallbackResult> } {
   let resolveResult: (r: CallbackResult) => void;
   const once = new Promise<CallbackResult>((resolve) => {
     resolveResult = resolve;
@@ -120,7 +118,7 @@ function sleep(ms: number): Promise<void> {
 export async function cmdLogin(args: { backend?: string; org?: string }): Promise<number> {
   const backend = (args.backend ?? process.env.ARMORIQ_BACKEND_URL ?? backendBase()).replace(
     /\/+$/,
-    '',
+    ''
   );
   const requestedOrg = (args.org ?? '').trim();
 
@@ -134,7 +132,11 @@ export async function cmdLogin(args: { backend?: string; org?: string }): Promis
 
   let dc: any;
   try {
-    const r = await axios.post(`${backend}/auth/device/code`, { callback_url: callbackUrl }, { timeout: 10000 });
+    const r = await axios.post(
+      `${backend}/auth/device/code`,
+      { callback_url: callbackUrl },
+      { timeout: 10000 }
+    );
     dc = r.data;
   } catch (e) {
     server.close();
@@ -147,13 +149,12 @@ export async function cmdLogin(args: { backend?: string; org?: string }): Promis
   const expiresIn = Number(dc.expires_in ?? 600) || 600;
 
   const sep = verification_uri_complete.includes('?') ? '&' : '?';
-  let browserUrl =
-    `${verification_uri_complete}${sep}callback=${encodeURIComponent(callbackUrl)}`;
+  let browserUrl = `${verification_uri_complete}${sep}callback=${encodeURIComponent(callbackUrl)}`;
   if (requestedOrg) browserUrl += `&org=${encodeURIComponent(requestedOrg)}`;
 
   out('  Opening browser...\n');
   openBrowser(browserUrl);
-  out('  If the browser didn\'t open, visit:');
+  out("  If the browser didn't open, visit:");
   out(`    \x1b[36m\x1b[1m${browserUrl}\x1b[0m\n`);
   out(`  Confirm this code in your browser: \x1b[1m${user_code}\x1b[0m\n`);
   process.stdout.write('  Waiting for authorization...');
@@ -177,7 +178,7 @@ export async function cmdLogin(args: { backend?: string; org?: string }): Promis
       const pr = await axios.post(
         `${backend}/auth/device/token`,
         { deviceCode: device_code },
-        { timeout: 10000, validateStatus: () => true },
+        { timeout: 10000, validateStatus: () => true }
       );
       const data = pr.data ?? {};
       const err = data.error;
@@ -204,7 +205,9 @@ export async function cmdLogin(args: { backend?: string; org?: string }): Promis
 
   if (!result || !result.api_key) {
     out(` ${CROSS}`);
-    out(`  ${CROSS} ${lastErr ?? 'Timed out waiting for authorization. Run `armoriq login` again.'}`);
+    out(
+      `  ${CROSS} ${lastErr ?? 'Timed out waiting for authorization. Run `armoriq login` again.'}`
+    );
     return 1;
   }
 
@@ -218,7 +221,7 @@ export async function cmdLogin(args: { backend?: string; org?: string }): Promis
   out(` ${CHECK}`);
   out('');
   out(
-    `  ${CHECK} Logged in as \x1b[1m${result.email ?? 'unknown'}\x1b[0m (org: ${result.org_id ?? 'unknown'})`,
+    `  ${CHECK} Logged in as \x1b[1m${result.email ?? 'unknown'}\x1b[0m (org: ${result.org_id ?? 'unknown'})`
   );
   out(`  ${CHECK} API key saved to ${getCredentialsPath()}`);
   out('');

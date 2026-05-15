@@ -1,10 +1,10 @@
 /**
  * ArmorIQ SDK - Build Secure AI Agents
- * 
+ *
  * A TypeScript SDK for building AI agents with cryptographic intent verification.
  * Provides simple APIs for plan capture, token management, and secure MCP
  * tool invocation with built-in security.
- * 
+ *
  * @author ArmorIQ Team <license@armoriq.io>
  * @version 0.3.0
  */

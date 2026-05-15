@@ -102,13 +102,11 @@ maybeDescribe('E2E: proxy enforcement outcomes (live backend)', () => {
         thrown = e;
       }
       expect(thrown).toBeDefined();
-      expect((thrown as Error).name).toMatch(
-        /PolicyBlockedException|PolicyHoldException/,
-      );
+      expect((thrown as Error).name).toMatch(/PolicyBlockedException|PolicyHoldException/);
       // We expect block specifically; flag if the policy was misconfigured as hold.
       if ((thrown as Error).name === 'PolicyHoldException') {
         console.warn(
-          'block test landed on PolicyHoldException — check that BLOCK_MCP/denied has enforcement: block, not hold',
+          'block test landed on PolicyHoldException — check that BLOCK_MCP/denied has enforcement: block, not hold'
         );
       }
     }, 30_000);
@@ -142,7 +140,7 @@ maybeDescribe('E2E: proxy enforcement outcomes (live backend)', () => {
             userEmail: E2E_USER,
             // do not auto-wait — we want the bare hold to surface
             waitForApproval: false,
-          },
+          }
         );
       } catch (e) {
         if (e instanceof PolicyHoldException) thrown = e;
@@ -169,11 +167,7 @@ maybeDescribe('E2E: proxy enforcement outcomes (live backend)', () => {
       expect(created.status).toMatch(/pending|approved/);
 
       // Without approval, checkApprovedDelegation should return null.
-      const beforeApproval = await client.checkApprovedDelegation(
-        E2E_USER,
-        'pay',
-        5000,
-      );
+      const beforeApproval = await client.checkApprovedDelegation(E2E_USER, 'pay', 5000);
       expect(beforeApproval).toBeNull();
 
       // markDelegationExecuted on a pending delegation should fail or be a no-op.

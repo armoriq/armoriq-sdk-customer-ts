@@ -27,7 +27,7 @@ export function defaultToolNameParser(defaultMcpName?: string): ToolNameParser {
     if (idx === -1) {
       if (!defaultMcpName) {
         throw new Error(
-          `Tool "${toolName}" is not namespaced as <MCP>__<action> and no defaultMcpName was set on the session.`,
+          `Tool "${toolName}" is not namespaced as <MCP>__<action> and no defaultMcpName was set on the session.`
         );
       }
       return { mcp: defaultMcpName, action: toolName };
@@ -65,7 +65,7 @@ export function buildPlanFromToolCalls(
   toolCalls: Array<ToolCall | { name: string; args?: Record<string, unknown> }>,
   goal?: string,
   toolNameParser?: ToolNameParser,
-  defaultMcpName?: string,
+  defaultMcpName?: string
 ): BuiltPlan {
   const parser = toolNameParser ?? defaultToolNameParser(defaultMcpName);
   const steps: PlanStep[] = toolCalls.map((tc) => {
@@ -90,7 +90,7 @@ export function buildPlanFromToolCalls(
  * json.dumps(separators=(",",":")), so TS and PY produce matching digests.
  */
 export function hashToolCalls(
-  toolCalls: Array<ToolCall | { name: string; args?: Record<string, unknown> }>,
+  toolCalls: Array<ToolCall | { name: string; args?: Record<string, unknown> }>
 ): string {
   const canonicalList = toolCalls.map((tc) => ({
     name: asToolCall(tc).name,
