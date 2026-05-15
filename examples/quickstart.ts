@@ -1,12 +1,12 @@
 /**
  * ArmorIQ Customer SDK - Quick Start Example
  * ==========================================
- * 
+ *
  * This example shows the simplest way to use ArmorIQ SDK:
  * 1. Create a plan
  * 2. Get a token
  * 3. Call a tool
- * 
+ *
  * ✨ NO GCP CREDENTIALS REQUIRED! ✨
  * Just provide your API key and you're ready to go.
  */
@@ -70,7 +70,7 @@ async function main() {
   }
 
   console.log('='.repeat(50));
-  console.log('🎉 Done! That\'s how easy it is to use ArmorIQ SDK.');
+  console.log("🎉 Done! That's how easy it is to use ArmorIQ SDK.");
   console.log('\n💡 Key Takeaway: No GCP setup required!');
   console.log('   - No service account JSON files');
   console.log('   - No KMS configuration');

@@ -72,9 +72,11 @@ export async function cmdSwitchOrg(args: { org: string; keyName?: string }): Pro
   } catch (e) {
     throw new CLIError(`Failed to reach ${url}: ${(e as Error).message}`);
   }
-  if (response.status === 401) throw new CLIError('API key rejected (401). Try `armoriq login` again.');
+  if (response.status === 401)
+    throw new CLIError('API key rejected (401). Try `armoriq login` again.');
   if (response.status === 403) throw new CLIError(`You are not a member of '${target}'.`);
-  if (response.status === 404) throw new CLIError(`No organization named '${target}' (or matching that id).`);
+  if (response.status === 404)
+    throw new CLIError(`No organization named '${target}' (or matching that id).`);
   if (response.status === 400) {
     throw new CLIError(response.data?.message || 'Bad request.');
   }

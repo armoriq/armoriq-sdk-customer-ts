@@ -1,8 +1,4 @@
-import {
-  defaultToolNameParser,
-  buildPlanFromToolCalls,
-  hashToolCalls,
-} from '../src/plan_builder';
+import { defaultToolNameParser, buildPlanFromToolCalls, hashToolCalls } from '../src/plan_builder';
 
 describe('defaultToolNameParser', () => {
   it('splits namespaced tool names on the first __ separator', () => {
@@ -48,7 +44,7 @@ describe('buildPlanFromToolCalls', () => {
         { name: 'Stripe__create_payment', args: { amount: 100 } },
         { name: 'GitHub__open_pr', args: { title: 'fix' } },
       ],
-      'do work',
+      'do work'
     );
     expect(plan).toEqual({
       goal: 'do work',
@@ -82,7 +78,7 @@ describe('buildPlanFromToolCalls', () => {
       [{ name: 'list_invoices', args: { limit: 5 } }],
       'list',
       undefined,
-      'QuickBooks',
+      'QuickBooks'
     );
     expect(plan.steps[0].mcp).toBe('QuickBooks');
     expect(plan.steps[0].action).toBe('list_invoices');
@@ -95,7 +91,7 @@ describe('buildPlanFromToolCalls', () => {
       (name) => {
         const [mcp, action] = name.split('.');
         return { mcp, action };
-      },
+      }
     );
     expect(plan.steps[0].mcp).toBe('stripe');
     expect(plan.steps[0].action).toBe('create_payment');
@@ -120,9 +116,7 @@ describe('hashToolCalls', () => {
   });
 
   it('treats missing args the same as empty args (PY parity)', () => {
-    expect(hashToolCalls([{ name: 'A__b' }])).toBe(
-      hashToolCalls([{ name: 'A__b', args: {} }]),
-    );
+    expect(hashToolCalls([{ name: 'A__b' }])).toBe(hashToolCalls([{ name: 'A__b', args: {} }]));
   });
 
   it('uses the same canonical form Python emits (parity guard)', () => {

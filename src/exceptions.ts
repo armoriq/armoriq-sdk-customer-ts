@@ -15,7 +15,7 @@ export class ArmorIQException extends Error {
 
 /**
  * Raised when an intent token is invalid.
- * 
+ *
  * This can occur due to:
  * - Invalid signature
  * - Token expiration
@@ -35,7 +35,7 @@ export class InvalidTokenException extends ArmorIQException {
 
 /**
  * Raised when an action doesn't match the original intent plan.
- * 
+ *
  * This occurs when trying to execute an action that was not
  * included in the canonicalized plan used to generate the token.
  */
@@ -54,7 +54,7 @@ export class IntentMismatchException extends ArmorIQException {
 
 /**
  * Raised when an intent token has expired.
- * 
+ *
  * Tokens have a validity period set during issuance.
  * This exception is raised when attempting to use an expired token.
  */
@@ -71,7 +71,7 @@ export class TokenExpiredException extends InvalidTokenException {
 
 /**
  * Raised when an MCP action invocation fails.
- * 
+ *
  * This can occur due to:
  * - MCP server unavailable
  * - Action not found
@@ -95,7 +95,7 @@ export class MCPInvocationException extends ArmorIQException {
 
 /**
  * Raised when agent delegation fails.
- * 
+ *
  * This can occur due to:
  * - Target agent unavailable
  * - Trust delegation rejected
@@ -106,12 +106,7 @@ export class DelegationException extends ArmorIQException {
   public delegationId?: string;
   public statusCode?: number;
 
-  constructor(
-    message: string,
-    targetAgent?: string,
-    delegationId?: string,
-    statusCode?: number
-  ) {
+  constructor(message: string, targetAgent?: string, delegationId?: string, statusCode?: number) {
     super(message);
     this.name = 'DelegationException';
     this.targetAgent = targetAgent;
@@ -172,7 +167,7 @@ export class PolicyHoldException extends ArmorIQException {
 
 /**
  * Raised when SDK configuration is invalid.
- * 
+ *
  * This can occur due to:
  * - Missing required configuration
  * - Invalid endpoint URLs

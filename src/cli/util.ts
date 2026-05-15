@@ -39,7 +39,10 @@ export async function prompt(question: string, defaultValue?: string): Promise<s
   });
 }
 
-export async function promptYesNo(question: string, defaultValue: boolean = false): Promise<boolean> {
+export async function promptYesNo(
+  question: string,
+  defaultValue: boolean = false
+): Promise<boolean> {
   const hint = defaultValue ? 'Y/n' : 'y/N';
   const answer = (await prompt(`${question} [${hint}]`)).toLowerCase();
   if (!answer) return defaultValue;
@@ -62,7 +65,7 @@ export function requireCredentials(): Credentials {
   const creds = loadCredentials();
   if (!creds) {
     throw new CLIError(
-      `Not logged in (${getCredentialsPath()} missing). Run \`armoriq login\` first.`,
+      `Not logged in (${getCredentialsPath()} missing). Run \`armoriq login\` first.`
     );
   }
   return creds;

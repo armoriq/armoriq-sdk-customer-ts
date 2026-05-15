@@ -87,12 +87,7 @@ export class ArmorIQSession {
       return this.currentToken;
     }
 
-    const plan = buildPlanFromToolCalls(
-      toolCalls,
-      goal,
-      this.toolNameParser,
-      this.defaultMcpName,
-    );
+    const plan = buildPlanFromToolCalls(toolCalls, goal, this.toolNameParser, this.defaultMcpName);
 
     this.mcpByAction.clear();
     this.declaredTools.clear();
@@ -180,7 +175,7 @@ export class ArmorIQSession {
       if (deniedTools.includes(toolName) || deniedTools.includes(action)) {
         const deniedReasons: string[] = pv.denied_reasons ?? [];
         const reasonFromBackend = deniedReasons.find(
-          (r) => r.startsWith(`${action}:`) || r.startsWith(`${toolName}:`),
+          (r) => r.startsWith(`${action}:`) || r.startsWith(`${toolName}:`)
         );
         const reason =
           reasonFromBackend ??
@@ -199,10 +194,7 @@ export class ArmorIQSession {
     if (governingRule) {
       const allowed = governingRule.allowedTools ?? [];
       if (Array.isArray(allowed) && allowed.length > 0) {
-        const ok =
-          allowed.includes('*') ||
-          allowed.includes(action) ||
-          allowed.includes(toolName);
+        const ok = allowed.includes('*') || allowed.includes(action) || allowed.includes(toolName);
         if (!ok) {
           return {
             allowed: false,
@@ -224,12 +216,7 @@ export class ArmorIQSession {
     }
 
     if (governingRule) {
-      const thresholdDecision = this.evaluateAmountThreshold(
-        governingRule,
-        toolArgs,
-        action,
-        mcp,
-      );
+      const thresholdDecision = this.evaluateAmountThreshold(governingRule, toolArgs, action, mcp);
       if (thresholdDecision) {
         thresholdDecision.matchedPolicy = governingPolicyName;
         return thresholdDecision;
@@ -247,7 +234,7 @@ export class ArmorIQSession {
   async enforceSdk(
     toolName: string,
     toolArgs: Record<string, unknown>,
-    userEmail?: string,
+    userEmail?: string
   ): Promise<EnforceResult> {
     if (!this.currentToken) {
       throw new Error(`enforceSdk("${toolName}") called before startPlan().`);
@@ -281,16 +268,14 @@ export class ArmorIQSession {
         {
           headers: { 'X-API-Key': internals.apiKey, 'Content-Type': 'application/json' },
           timeout: 10000,
-        },
+        }
       );
       const data = response.data ?? {};
       const allowed = data.allowed !== false;
       const actionDecision: 'allow' | 'block' | 'hold' =
         data.enforcementAction ?? (allowed ? 'allow' : 'block');
       const matched: string | undefined =
-        typeof data.matchedPolicy === 'object'
-          ? data.matchedPolicy?.name
-          : data.matchedPolicy;
+        typeof data.matchedPolicy === 'object' ? data.matchedPolicy?.name : data.matchedPolicy;
       if (actionDecision === 'hold') {
         return this.handleHold(
           toolName,
@@ -301,7 +286,7 @@ export class ArmorIQSession {
             reason: data.reason ?? data.message,
             matchedPolicy: matched,
           },
-          userEmail,
+          userEmail
         );
       }
       return {
@@ -316,10 +301,7 @@ export class ArmorIQSession {
     }
   }
 
-  async enforce(
-    toolName: string,
-    toolArgs: Record<string, unknown>,
-  ): Promise<EnforceResult> {
+  async enforce(toolName: string, toolArgs: Record<string, unknown>): Promise<EnforceResult> {
     if (!this.currentToken) {
       throw new Error(`enforce("${toolName}") called before startPlan().`);
     }
@@ -358,7 +340,7 @@ export class ArmorIQSession {
         {
           headers: { 'X-API-Key': internals.apiKey, 'Content-Type': 'application/json' },
           timeout: 10000,
-        },
+        }
       );
       if (response.status === 403) {
         const data = response.data ?? {};
@@ -374,8 +356,7 @@ export class ArmorIQSession {
       }
       const data = response.data ?? {};
       const rawPolicy = data.matched_policy ?? data.matchedPolicy;
-      const policyName =
-        rawPolicy && typeof rawPolicy === 'object' ? rawPolicy.name : rawPolicy;
+      const policyName = rawPolicy && typeof rawPolicy === 'object' ? rawPolicy.name : rawPolicy;
       const allowedFlag = data.allowed !== false;
       const actionDecision: 'allow' | 'block' | 'hold' =
         data.enforcementAction ?? data.action ?? (allowedFlag ? 'allow' : 'block');
@@ -395,7 +376,7 @@ export class ArmorIQSession {
   async check(
     toolName: string,
     toolArgs: Record<string, unknown>,
-    userEmail?: string,
+    userEmail?: string
   ): Promise<EnforceResult> {
     if (this.mode === 'sdk') {
       return this.enforceSdk(toolName, toolArgs, userEmail);
@@ -424,7 +405,7 @@ export class ArmorIQSession {
     toolName: string,
     toolArgs: Record<string, unknown>,
     result: unknown,
-    opts?: ReportOptions,
+    opts?: ReportOptions
   ): Promise<void> {
     const o = opts ?? {};
     const { mcp, action } = this.toolNameParser(toolName);
@@ -460,7 +441,7 @@ export class ArmorIQSession {
         {
           headers: { 'X-API-Key': internals.apiKey, 'Content-Type': 'application/json' },
           timeout: 5000,
-        },
+        }
       );
     } catch (e) {
       console.warn(`report() failed: ${(e as Error).message}`);
@@ -485,7 +466,7 @@ export class ArmorIQSession {
     toolName: string,
     toolArgs: Record<string, unknown>,
     holdDecision: EnforceResult,
-    userEmail?: string,
+    userEmail?: string
   ): Promise<EnforceResult> {
     const internals = this.client._sessionInternals();
     const email = userEmail ?? internals.userId ?? 'unknown@armoriq';
@@ -573,7 +554,7 @@ export class ArmorIQSession {
     rule: Record<string, any>,
     toolArgs: Record<string, unknown>,
     action: string,
-    mcp: string,
+    mcp: string
   ): EnforceResult | undefined {
     const fin = rule.financialRule?.amountThreshold ?? rule.amountThreshold;
     if (!fin || typeof fin !== 'object') return undefined;
