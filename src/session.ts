@@ -31,16 +31,6 @@ export interface SessionOptions {
   validitySeconds?: number;
   llm?: string;
   mode?: SessionMode;
-  /**
-   * Per-call HTTP timeout for `enforceSdk` and `enforce` (proxy) checks.
-   * Default 10000ms. Bump for staging deployments where the backend is
-   * slow under load (e.g. public-IP DB without connection pooling).
-   */
-  checkTimeoutMs?: number;
-  /**
-   * HTTP timeout for `report()` audit POSTs. Default 5000ms.
-   */
-  reportTimeoutMs?: number;
 }
 
 export interface EnforceResult {
@@ -70,8 +60,6 @@ export class ArmorIQSession {
   private validitySeconds: number;
   private llm: string;
   private mode: SessionMode;
-  private checkTimeoutMs: number;
-  private reportTimeoutMs: number;
   private stepIndex = 0;
   private currentPlanHash?: string;
   private currentToken?: IntentToken;
@@ -86,8 +74,6 @@ export class ArmorIQSession {
     this.validitySeconds = o.validitySeconds ?? 3600;
     this.llm = o.llm ?? 'agent';
     this.mode = o.mode ?? 'local';
-    this.checkTimeoutMs = o.checkTimeoutMs ?? 10000;
-    this.reportTimeoutMs = o.reportTimeoutMs ?? 5000;
   }
 
   // ─── Plan capture ──────────────────────────────────────────────
@@ -290,10 +276,11 @@ export class ArmorIQSession {
           intent_token: this.currentToken.rawToken,
           policy_snapshot: this.currentToken.policySnapshot,
           user_email: userEmail,
+          agent_id: internals.agentId || undefined,
         },
         {
           headers: { 'X-API-Key': internals.apiKey, 'Content-Type': 'application/json' },
-          timeout: this.checkTimeoutMs,
+          timeout: 10000,
         },
       );
       const data = response.data ?? {};
@@ -370,7 +357,7 @@ export class ArmorIQSession {
         payload,
         {
           headers: { 'X-API-Key': internals.apiKey, 'Content-Type': 'application/json' },
-          timeout: this.checkTimeoutMs,
+          timeout: 10000,
         },
       );
       if (response.status === 403) {
@@ -472,7 +459,7 @@ export class ArmorIQSession {
         },
         {
           headers: { 'X-API-Key': internals.apiKey, 'Content-Type': 'application/json' },
-          timeout: this.reportTimeoutMs,
+          timeout: 5000,
         },
       );
     } catch (e) {
@@ -504,10 +491,17 @@ export class ArmorIQSession {
     const email = userEmail ?? internals.userId ?? 'unknown@armoriq';
     const { mcp, action } = this.toolNameParser(toolName);
     const resolvedMcp = this.mcpByAction.get(action) ?? mcp;
-    const amount = ArmorIQSession.extractAmount(toolArgs) ?? 0;
+    const rawAmount = ArmorIQSession.extractAmount(toolArgs) ?? 0;
+    // Single normalized amount used for BOTH the approved-delegation lookup and
+    // the create call — must agree, otherwise the SDK keeps creating new pending
+    // rows because the existing approved one (created at safeAmount) won't match
+    // a check sent at rawAmount. Backend doesn't filter by amount today (see
+    // conmap-auto delegation.service.ts checkApprovedDelegation), but staying
+    // consistent here is forward-compatible.
+    const safeAmount = typeof rawAmount === 'number' && rawAmount >= 0.01 ? rawAmount : 0.01;
 
     try {
-      const approved = await this.client.checkApprovedDelegation(email, action, amount);
+      const approved = await this.client.checkApprovedDelegation(email, action, safeAmount);
       if (approved) {
         try {
           if (approved.delegationId) {
@@ -530,12 +524,20 @@ export class ArmorIQSession {
 
     let delegationId: string | undefined;
     try {
+      // The conmap-auto DTO requires amount/requesterRole/requesterLimit; for
+      // non-financial holds (PHI write, prior-auth, etc.) the SDK supplies
+      // healthcare-shaped defaults so the row gets created. The approver UI
+      // can read the original tool args from `arguments`. requesterRole
+      // matches the default used elsewhere in the SDK (resolveUserRole
+      // fallback in client.ts).
       const result = await this.client.createDelegationRequest({
         tool: action,
         action,
         arguments: toolArgs,
-        amount: amount || undefined,
+        amount: safeAmount,
         requesterEmail: email,
+        requesterRole: 'agent_user',
+        requesterLimit: 0,
         domain: resolvedMcp,
         planId: this.currentToken?.planId,
         intentReference: this.currentToken?.tokenId,

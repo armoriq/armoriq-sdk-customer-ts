@@ -185,7 +185,7 @@ export class ArmorIQClient {
 
     // Initialize HTTP client
     const headers: Record<string, string> = {
-      'User-Agent': `ArmorIQ-SDK-TS/0.3.1 (agent=${this.agentId})`,
+      'User-Agent': `ArmorIQ-SDK-TS/0.3.0 (agent=${this.agentId})`,
     };
     if (this.apiKey) {
       headers['Authorization'] = `Bearer ${this.apiKey}`;
@@ -247,8 +247,17 @@ export class ArmorIQClient {
       backendEndpoint: this.backendEndpoint,
       defaultProxyEndpoint: this.defaultProxyEndpoint,
       httpClient: this.httpClient,
-      userId: this.userId,
+      userId: this.userEmailOverride || this.userId,
+      agentId: this.agentId,
     };
+  }
+
+  _setAgentId(agentId: string) {
+    this.agentId = agentId;
+  }
+
+  getAgentId(): string {
+    return this.agentId;
   }
 
   /**
@@ -581,7 +590,7 @@ export class ArmorIQClient {
     );
 
     const payload = {
-      user_id: this.userId,
+      user_id: this.userEmailOverride || this.userId,
       agent_id: this.agentId,
       context_id: this.contextId,
       plan: planCapture.plan,
@@ -709,7 +718,7 @@ export class ArmorIQClient {
       iamContext.user_email = userEmail;
     }
     if (intentToken.rawToken) {
-      iamContext.user_id = intentToken.rawToken.user_id || this.userId;
+      iamContext.user_id = intentToken.rawToken.user_id || this.userEmailOverride || this.userId;
       iamContext.agent_id = intentToken.rawToken.agent_id || this.agentId;
     }
 

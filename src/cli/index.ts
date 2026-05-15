@@ -18,11 +18,7 @@ armoriq — ArmorIQ SDK CLI
 Usage: armoriq <command> [options]
 
 Commands:
-  login [--org <name>] [--product <slug>]
-                             OAuth device-code login flow.
-                             --product is a hint for product-aware branding
-                             (armorclaude, armorcodex). Also reads
-                             ARMORIQ_PRODUCT env var.
+  login [--org <name>]       OAuth device-code login flow
   logout                     Remove cached credentials
   whoami                     Show the currently logged-in account
 
@@ -69,8 +65,7 @@ async function run(argv: Argv): Promise<number> {
       const { cmdLogin } = await import('./commands/auth.js');
       const org = parseFlag(rest, 'org') as string | undefined;
       const backend = parseFlag(rest, 'backend') as string | undefined;
-      const product = parseFlag(rest, 'product') as string | undefined;
-      return cmdLogin({ org, backend, product });
+      return cmdLogin({ org, backend });
     }
     case 'logout': {
       const { cmdLogout } = await import('./commands/auth.js');

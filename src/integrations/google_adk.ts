@@ -49,10 +49,7 @@ export interface ArmorIQADKOptions {
   validitySeconds?: number;
   mode?: SessionMode;
   llm?: string;
-  /** Per-call HTTP timeout for `enforceSdk` / `enforce` checks (ms). Default 10000. */
-  checkTimeoutMs?: number;
-  /** HTTP timeout for `report()` audit POSTs (ms). Default 5000. */
-  reportTimeoutMs?: number;
+  agentName?: string;
 }
 
 /**
@@ -74,12 +71,13 @@ export class ArmorIQADK {
   public readonly llm: string;
   public readonly validitySeconds: number;
   public readonly defaultMcpName?: string;
-  public readonly checkTimeoutMs?: number;
-  public readonly reportTimeoutMs?: number;
   private customParser?: ToolNameParser;
   private bootstrapData?: Record<string, any>;
+  private explicitAgentName: boolean;
 
   constructor(opts: ArmorIQADKOptions) {
+    const agentName = opts.agentName || process.env.AGENT_ID || '';
+    this.explicitAgentName = !!agentName;
     this.client = new ArmorIQClient({
       apiKey: opts.apiKey,
       backendEndpoint: opts.backendEndpoint,
@@ -87,27 +85,41 @@ export class ArmorIQADK {
       proxyEndpoint: opts.proxyEndpoint ?? opts.backendEndpoint,
       useProduction: opts.useProduction ?? true,
       userId: 'agent',
-      agentId: 'agent',
+      agentId: agentName || 'agent',
     });
     this.defaultMcpName = opts.defaultMcpName;
     this.customParser = opts.toolNameParser;
     this.validitySeconds = opts.validitySeconds ?? 300;
     this.mode = opts.mode ?? 'sdk';
     this.llm = opts.llm ?? 'agent';
-    this.checkTimeoutMs = opts.checkTimeoutMs;
-    this.reportTimeoutMs = opts.reportTimeoutMs;
   }
 
   async bootstrap(): Promise<Record<string, any>> {
     if (!this.bootstrapData) {
       this.bootstrapData = await this.client.bootstrap();
       const orgName = this.bootstrapData.org?.name ?? 'unknown';
+
+      // Auto-resolve agentId from bootstrap only when not explicitly provided.
+      // The agents list (new in bootstrap response) is authoritative — the
+      // legacy agent.name field returned the API key's display name which
+      // caused cross-agent policy attribution (#199).
+      if (!this.explicitAgentName) {
+        const agents: Array<{ agentId: string; name: string }> = this.bootstrapData.agents ?? [];
+        const single = agents.length === 1 ? agents[0] : null;
+        const fallback = this.bootstrapData.agent?.name;
+        const resolved = single?.name ?? fallback;
+        if (resolved) {
+          this.client._setAgentId(resolved);
+        }
+      }
+
+      const resolvedAgent = this.client.getAgentId?.() ?? 'unknown';
       const mcps = Array.isArray(this.bootstrapData.mcps)
         ? this.bootstrapData.mcps.map((m: any) => m.name)
         : [];
       const toolMapSize = Object.keys(this.bootstrapData.toolMap ?? {}).length;
       console.info(
-        `[armoriq] bootstrap: org=${orgName} mcps=${JSON.stringify(mcps)} toolMap=${toolMapSize}`,
+        `[armoriq] bootstrap: org=${orgName} agent=${resolvedAgent} mcps=${JSON.stringify(mcps)} toolMap=${toolMapSize}`,
       );
     }
     return this.bootstrapData!;
@@ -191,22 +203,15 @@ export class ArmorIQADKBundle {
         llm: this.factory.llm,
         toolNameParser: this.parser,
         defaultMcpName: this.factory.defaultMcpName,
-        checkTimeoutMs: this.factory.checkTimeoutMs,
-        reportTimeoutMs: this.factory.reportTimeoutMs,
       };
       this.session = this.scope.startSession(opts);
     }
     return this.session;
   }
 
-  // ADK 0.6.x calls each lifecycle callback with a single object param —
-  // see node_modules/@google/adk/dist/types/agents/llm_agent.d.ts.
-  // Older shapes (positional args) silently produced `args[1] === undefined`
-  // and `tool === [object Object]`, which made the SDK fail-open.
-  private async afterModel(params: { context?: any; response?: any }): Promise<unknown> {
+  private async afterModel(_callbackContext: any, llmResponse: any): Promise<unknown> {
     try {
       if (this.planMinted) return null;
-      const llmResponse = params?.response;
       const parts = llmResponse?.content?.parts ?? [];
       const toolCalls: ToolCall[] = [];
       for (const p of parts) {
@@ -225,13 +230,7 @@ export class ArmorIQADKBundle {
     return null;
   }
 
-  private async beforeTool(params: {
-    tool: any;
-    args: any;
-    context?: any;
-  }): Promise<unknown> {
-    const tool = params?.tool;
-    const args = params?.args;
+  private async beforeTool(tool: any, args: any, _toolContext?: any): Promise<unknown> {
     const toolName: string = tool?.name ?? String(tool);
     try {
       const decision = await this.ensureSession().check(toolName, args ?? {}, this.userEmail);
@@ -327,15 +326,7 @@ export class ArmorIQADKBundle {
     return null;
   }
 
-  private async afterTool(params: {
-    tool: any;
-    args: any;
-    context?: any;
-    response: any;
-  }): Promise<unknown> {
-    const tool = params?.tool;
-    const args = params?.args;
-    const toolResponse = params?.response;
+  private async afterTool(tool: any, args: any, _toolContext: any, toolResponse: any): Promise<unknown> {
     const toolName: string = tool?.name ?? String(tool);
     try {
       if (this.blockedTools.has(toolName)) {
@@ -368,11 +359,25 @@ export class ArmorIQADKBundle {
       beforeToolCallback: agent.beforeToolCallback,
       afterToolCallback: agent.afterToolCallback,
     };
-    // ADK 0.6.x callback shape: a single object containing all params.
-    // See dist/types/agents/llm_agent.d.ts in @google/adk.
-    agent.afterModelCallback = (params: any) => this.afterModel(params);
-    agent.beforeToolCallback = (params: any) => this.beforeTool(params);
-    agent.afterToolCallback = (params: any) => this.afterTool(params);
+    agent.afterModelCallback = (...args: any[]) => this.afterModel(args[0], args[1]);
+    agent.beforeToolCallback = (...args: any[]) => {
+      const a = args[0];
+      // Require `tool` specifically — anything else means we're in legacy
+      // positional mode and a is the BaseTool itself.
+      if (a && typeof a === 'object' && 'tool' in a) {
+        return this.beforeTool(a.tool, a.args, a.context ?? a.toolContext);
+      }
+      return this.beforeTool(a, args[1], args[2]);
+    };
+    agent.afterToolCallback = (...args: any[]) => {
+      const a = args[0];
+      // Require `tool` specifically — anything else means we're in legacy
+      // positional mode and a is the BaseTool itself.
+      if (a && typeof a === 'object' && 'tool' in a) {
+        return this.afterTool(a.tool, a.args, a.context ?? a.toolContext, a.response);
+      }
+      return this.afterTool(a, args[1], args[2], args[3]);
+    };
     return this;
   }
 
