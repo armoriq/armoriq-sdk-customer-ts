@@ -256,6 +256,10 @@ export class ArmorIQClient {
     this.agentId = agentId;
   }
 
+  getAgentId(): string {
+    return this.agentId;
+  }
+
   /**
    * Start a session bound to this client. Mirrors PY ArmorIQClient.start_session.
    */
