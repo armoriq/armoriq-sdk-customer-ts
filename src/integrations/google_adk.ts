@@ -84,8 +84,10 @@ export class ArmorIQADK {
   public readonly trueReanchor: boolean;
   private customParser?: ToolNameParser;
   private bootstrapData?: Record<string, any>;
+  private readonly explicitAgentName?: string;
 
   constructor(opts: ArmorIQADKOptions) {
+    this.explicitAgentName = opts.agentName;
     this.client = new ArmorIQClient({
       apiKey: opts.apiKey,
       backendEndpoint: opts.backendEndpoint,
@@ -93,7 +95,9 @@ export class ArmorIQADK {
       proxyEndpoint: opts.proxyEndpoint ?? opts.backendEndpoint,
       useProduction: opts.useProduction ?? true,
       userId: 'agent',
-      agentId: opts.agentName || 'agent',
+      // When agentName is not explicitly provided, omit agentId so the
+      // client constructor's env fallback (AGENT_ID) can kick in.
+      ...(opts.agentName ? { agentId: opts.agentName } : {}),
     });
     this.defaultMcpName = opts.defaultMcpName;
     this.customParser = opts.toolNameParser;
@@ -107,16 +111,30 @@ export class ArmorIQADK {
     if (!this.bootstrapData) {
       this.bootstrapData = await this.client.bootstrap();
       const orgName = this.bootstrapData.org?.name ?? 'unknown';
-      const agentName = this.bootstrapData.agent?.name;
-      if (agentName) {
-        this.client._setAgentId(agentName);
+
+      // Auto-resolve agentId from bootstrap only when the caller didn't
+      // pass an explicit agentName. The agents[] list (new in bootstrap
+      // response) is authoritative — the legacy agent.name returned the
+      // API key's display name which caused cross-agent policy
+      // attribution issues (#199).
+      let resolvedAgentName: string | undefined;
+      if (!this.explicitAgentName) {
+        const agents: Array<{ agentId: string; name: string }> = this.bootstrapData.agents ?? [];
+        const single = agents.length === 1 ? agents[0] : null;
+        const fallback = this.bootstrapData.agent?.name;
+        resolvedAgentName = single?.name ?? fallback;
+        if (resolvedAgentName) {
+          this.client._setAgentId(resolvedAgentName);
+        }
       }
+
       const mcps = Array.isArray(this.bootstrapData.mcps)
         ? this.bootstrapData.mcps.map((m: any) => m.name)
         : [];
       const toolMapSize = Object.keys(this.bootstrapData.toolMap ?? {}).length;
+      const loggedAgentName = this.explicitAgentName ?? resolvedAgentName ?? 'unknown';
       console.info(
-        `[armoriq] bootstrap: org=${orgName} agent=${agentName ?? 'unknown'} mcps=${JSON.stringify(mcps)} toolMap=${toolMapSize}`,
+        `[armoriq] bootstrap: org=${orgName} agent=${loggedAgentName} mcps=${JSON.stringify(mcps)} toolMap=${toolMapSize}`,
       );
     }
     return this.bootstrapData!;
