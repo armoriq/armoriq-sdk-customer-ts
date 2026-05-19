@@ -36,6 +36,29 @@ export interface IntentToken {
   jwtToken?: string;
   /** OPA-formatted policy snapshot for proxy → OPA direct enforcement */
   policySnapshot?: Array<Record<string, any>>;
+
+  /**
+   * Subtree-bounded delegation envelope. Present iff this token was minted
+   * by `client.delegateSubtree(...)`. Carries the Merkle inclusion proof
+   * that lets the proxy verify the child's authority chains to the parent
+   * plan root, confining the child's allowed actions to `subtreePath`.
+   *
+   * When this is set, the SDK's `invoke()` automatically attaches three
+   * extra headers on every tool call:
+   *   - X-CSRG-Subtree-Path     = subtreePath
+   *   - X-CSRG-Subtree-Root     = subtreeRoot (h_subtree)
+   *   - X-CSRG-Subtree-Proof    = base64(JSON.stringify(inclusionProof))
+   *   - X-CSRG-Parent-Root      = parentPlanHash (h_P)
+   * The proxy's PEP verifies the proof and rejects calls whose CSRG path
+   * falls outside the subtreePath boundary.
+   */
+  subtreeDelegation?: {
+    subtreePath: string;
+    subtreeRoot: string;
+    parentPlanHash: string;
+    inclusionProof: Array<Record<string, any>>;
+    parentTokenId?: string;
+  };
 }
 
 /**
