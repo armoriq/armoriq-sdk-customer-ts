@@ -809,6 +809,28 @@ export class ArmorIQClient {
     const valueDigest = crypto.createHash('sha256').update(valueStr, 'utf8').digest('hex');
     headers['X-CSRG-Value-Digest'] = valueDigest;
 
+    // Subtree delegation envelope (Bug 4 wiring): when this token was minted
+    // by client.delegateSubtree(), attach the inclusion proof + subtree root
+    // so the proxy's PEP can verify the child's authority chains to the
+    // parent plan root and reject calls outside the subtree.
+    const subtree = (intentToken as any).subtreeDelegation;
+    if (subtree && typeof subtree === 'object') {
+      if (typeof subtree.subtreePath === 'string') {
+        headers['X-CSRG-Subtree-Path'] = subtree.subtreePath;
+      }
+      if (typeof subtree.subtreeRoot === 'string' && subtree.subtreeRoot.length > 0) {
+        headers['X-CSRG-Subtree-Root'] = subtree.subtreeRoot;
+      }
+      if (typeof subtree.parentPlanHash === 'string' && subtree.parentPlanHash.length > 0) {
+        headers['X-CSRG-Parent-Root'] = subtree.parentPlanHash;
+      }
+      if (Array.isArray(subtree.inclusionProof) && subtree.inclusionProof.length > 0) {
+        // Base64-encode to keep the header reasonable when proof is long.
+        const proofJson = JSON.stringify(subtree.inclusionProof);
+        headers['X-CSRG-Subtree-Proof'] = Buffer.from(proofJson, 'utf8').toString('base64');
+      }
+    }
+
     // Call proxy
     try {
       const startTime = Date.now();
@@ -1022,6 +1044,167 @@ export class ArmorIQClient {
         targetAgent,
         undefined,
         statusCode
+      );
+    }
+  }
+
+  // -------------------- Trust Update primitive --------------------
+  // Three thin client methods that talk to conmap-auto's /iap/trust/* API.
+  // Devs should treat them as one-liners — no Merkle awareness needed.
+
+  /**
+   * Revoke an issued intent token. Returns once the IAP backend has signed
+   * the revocation delta and broadcast it on the trust channel; the proxy
+   * fleet refuses the token within Δ (paper target ~55 ms in single region).
+   */
+  async revoke(
+    intentToken: IntentToken,
+    reason: string,
+    opts?: { cascade?: boolean; planId?: string; intentReference?: string }
+  ): Promise<{ trustId: string; delta: any; cascadedRevocations?: string[] }> {
+    let token = intentToken.rawToken;
+    if (typeof token === 'object' && token && 'token' in token) token = token.token;
+    const body = {
+      token,
+      reason,
+      cascade: opts?.cascade ?? true,
+      planId: opts?.planId ?? intentToken.planId,
+      intentReference: opts?.intentReference,
+    };
+    const url = `${this.backendEndpoint}/iap/trust/revoke`;
+    try {
+      const response = await this._retryPost(url, body, { timeout: 10000 });
+      if (response.status >= 400) {
+        throw new Error(`HTTP ${response.status}: ${JSON.stringify(response.data)}`);
+      }
+      return response.data;
+    } catch (error: any) {
+      throw new DelegationException(
+        `Revoke failed: ${error.response?.data || error.message}`,
+        undefined,
+        intentToken.tokenId,
+        error.response?.status
+      );
+    }
+  }
+
+  /**
+   * Re-anchor a plan that has changed mid-execution. The IAP backend signs a
+   * delta tying the previous plan hash to the new one; subsequent tool calls
+   * carry the new merkle_root and authorize against it.
+   */
+  async reanchor(
+    intentToken: IntentToken,
+    updatedPlan: Record<string, any>,
+    reason?: string,
+    opts?: { planId?: string; intentReference?: string }
+  ): Promise<{ trustId: string; delta: any }> {
+    const body = {
+      newPlan: updatedPlan,
+      reason,
+      planId: opts?.planId ?? intentToken.planId,
+      intentReference: opts?.intentReference,
+    };
+    const url = `${this.backendEndpoint}/iap/trust/reanchor`;
+    try {
+      const response = await this._retryPost(url, body, { timeout: 10000 });
+      if (response.status >= 400) {
+        throw new Error(`HTTP ${response.status}: ${JSON.stringify(response.data)}`);
+      }
+      return response.data;
+    } catch (error: any) {
+      throw new DelegationException(
+        `Reanchor failed: ${error.response?.data || error.message}`,
+        undefined,
+        intentToken.tokenId,
+        error.response?.status
+      );
+    }
+  }
+
+  /**
+   * Issue a subtree-bounded child token. Unlike the legacy `delegate()` which
+   * forwards to the older approval-style endpoint, this returns a token plus a
+   * Merkle inclusion proof linking the subtree root to the parent plan root.
+   * The child agent presents the proof on every tool call; the proxy verifies
+   * scope confinement before allowing execution.
+   */
+  async delegateSubtree(
+    intentToken: IntentToken,
+    opts: {
+      delegatePublicKey: string;
+      subtreePath: string;
+      validitySeconds?: number;
+      parentPlan?: Record<string, any>;
+      allowedTools?: string[];
+      targetAgent?: string;
+      planId?: string;
+      intentReference?: string;
+    }
+  ): Promise<{
+    trustId: string;
+    delta: any;
+    inclusionProof: any[];
+    subtreeRoot: string;
+    /**
+     * Drop-in IntentToken the sub-agent passes to its own client.invoke().
+     * Carries the subtreeDelegation envelope so the SDK auto-attaches the
+     * X-CSRG-Subtree-* headers and the proxy enforces scope confinement.
+     */
+    delegatedToken: IntentToken;
+  }> {
+    let parentToken = intentToken.rawToken;
+    if (typeof parentToken === 'object' && parentToken && 'token' in parentToken) {
+      parentToken = parentToken.token;
+    }
+    const body = {
+      parentToken,
+      delegatePublicKey: opts.delegatePublicKey,
+      validitySeconds: opts.validitySeconds ?? 3600,
+      parentPlan: opts.parentPlan,
+      subtreePath: opts.subtreePath,
+      planId: opts.planId ?? intentToken.planId,
+      intentReference: opts.intentReference,
+    };
+    const url = `${this.backendEndpoint}/iap/trust/delegate`;
+    try {
+      const response = await this._retryPost(url, body, { timeout: 10000 });
+      if (response.status >= 400) {
+        throw new Error(`HTTP ${response.status}: ${JSON.stringify(response.data)}`);
+      }
+      const data = response.data;
+      const payload = data?.delta?.payload ?? {};
+      const inclusionProof = payload.inclusion_proof ?? [];
+      const subtreeRoot = payload.subtree_node_hash ?? '';
+      const parentPlanHash = payload.parent_plan_hash ?? intentToken.planHash;
+
+      // The delegated token is the parent token *plus* a subtreeDelegation
+      // envelope. The SDK's invoke() reads this envelope and attaches the
+      // X-CSRG-Subtree-* headers for proxy-side proof verification (Bug 4).
+      const delegatedToken: IntentToken = {
+        ...intentToken,
+        subtreeDelegation: {
+          subtreePath: opts.subtreePath,
+          subtreeRoot,
+          parentPlanHash,
+          inclusionProof,
+          parentTokenId: intentToken.tokenId,
+        },
+      };
+
+      return {
+        trustId: data.trustId,
+        delta: data.delta,
+        inclusionProof,
+        subtreeRoot,
+        delegatedToken,
+      };
+    } catch (error: any) {
+      throw new DelegationException(
+        `delegateSubtree failed: ${error.response?.data || error.message}`,
+        opts.targetAgent,
+        undefined,
+        error.response?.status
       );
     }
   }

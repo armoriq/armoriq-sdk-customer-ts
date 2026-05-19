@@ -178,3 +178,220 @@ describe('ArmorIQSession.reset', () => {
     expect((s as any).declaredTools.size).toBe(0);
   });
 });
+
+describe('ArmorIQSession.startPlan auto-reanchor', () => {
+  // autoReanchor flag removed 2026-05-13 — auto-reanchor is always on.
+  // trueReanchor default flipped to true on 2026-05-17 post-soak; the legacy
+  // v2 path (record delta + re-mint) still ships for callers that opt out via
+  // trueReanchor: false, which is what these tests exercise.
+  it('always records a Trust Update ReAnchor delta on plan growth', async () => {
+    const client = makeClient();
+    const s = new ArmorIQSession(client, { trueReanchor: false, defaultMcpName: 'TestMcp' });
+
+    const reanchorMock = jest.fn().mockResolvedValue({ trustId: 'tr_abc', delta: {} });
+    const issueMock = jest
+      .fn()
+      .mockResolvedValueOnce(tokenWithPolicy())
+      .mockResolvedValueOnce(tokenWithPolicy());
+    (client as any).reanchor = reanchorMock;
+    (client as any).getIntentToken = issueMock;
+    (client as any).capturePlan = (_llm: string, _goal: string, plan: any) => plan;
+
+    await s.startPlan([{ name: 'echo', args: { text: 'hi' } }], 'goal');
+    expect(reanchorMock).not.toHaveBeenCalled();
+    expect(issueMock).toHaveBeenCalledTimes(1);
+
+    await s.startPlan(
+      [
+        { name: 'echo', args: { text: 'hi' } },
+        { name: 'add_step', args: { step: 'verify' } },
+      ],
+      'goal',
+    );
+
+    expect(reanchorMock).toHaveBeenCalledTimes(1);
+    expect(issueMock).toHaveBeenCalledTimes(2);
+    expect(reanchorMock.mock.invocationCallOrder[0]).toBeLessThan(
+      issueMock.mock.invocationCallOrder[1],
+    );
+  });
+
+  it('Phase 4 C5c: trueReanchor=true skips re-mint and reuses the same token', async () => {
+    const client = makeClient();
+    const s = new ArmorIQSession(client, { trueReanchor: true, defaultMcpName: 'TestMcp' });
+
+    const reanchorMock = jest.fn().mockResolvedValue({ trustId: 'tr_chain_1', delta: {} });
+    const initialToken = tokenWithPolicy();
+    const issueMock = jest
+      .fn()
+      // Only used for the first plan (no existing token yet)
+      .mockResolvedValueOnce(initialToken);
+    (client as any).reanchor = reanchorMock;
+    (client as any).getIntentToken = issueMock;
+    (client as any).capturePlan = (_llm: string, _goal: string, plan: any) => plan;
+
+    // First plan: no existing token, falls through to mint
+    const t1 = await s.startPlan([{ name: 'echo', args: { text: 'hi' } }], 'goal');
+    expect(t1).toBe(initialToken);
+    expect(reanchorMock).not.toHaveBeenCalled();
+    expect(issueMock).toHaveBeenCalledTimes(1);
+
+    // Second plan: existing token + trueReanchor → record delta and REUSE
+    const t2 = await s.startPlan(
+      [
+        { name: 'echo', args: { text: 'hi' } },
+        { name: 'add_step', args: { step: 'verify' } },
+      ],
+      'goal',
+    );
+
+    expect(reanchorMock).toHaveBeenCalledTimes(1);
+    // CRITICAL: getIntentToken was NOT called the second time
+    expect(issueMock).toHaveBeenCalledTimes(1);
+    // Same JWT object reference returned
+    expect(t2).toBe(initialToken);
+  });
+
+  it('Phase 4 C5c: trueReanchor reanchor failure falls back to legacy re-mint', async () => {
+    const client = makeClient();
+    const s = new ArmorIQSession(client, { trueReanchor: true, defaultMcpName: 'TestMcp' });
+    const reanchorMock = jest.fn().mockRejectedValue(new Error('chain endpoint down'));
+    const issueMock = jest
+      .fn()
+      .mockResolvedValueOnce(tokenWithPolicy())
+      .mockResolvedValueOnce(tokenWithPolicy());
+    (client as any).reanchor = reanchorMock;
+    (client as any).getIntentToken = issueMock;
+    (client as any).capturePlan = (_llm: string, _goal: string, plan: any) => plan;
+
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    await s.startPlan([{ name: 'echo' }], 'goal');
+    await s.startPlan([{ name: 'echo' }, { name: 'add_step' }], 'goal');
+
+    // trueReanchor tries first (fails), then legacy auto-reanchor path
+    // tries again (also fails) — both call reanchor, then re-mint.
+    // What matters for this test: re-mint DID happen on fallback.
+    expect(reanchorMock.mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(issueMock).toHaveBeenCalledTimes(2); // fallback re-mint occurred
+    warn.mockRestore();
+  });
+
+  it('Phase 4 A6: deferred granularity coalesces 3 plan growths into 1 reanchor at flush', async () => {
+    const client = makeClient();
+    const s = new ArmorIQSession(client, {
+      trueReanchor: true,
+      reanchorGranularity: 'deferred',
+      defaultMcpName: 'TestMcp',
+    });
+
+    const reanchorMock = jest.fn().mockResolvedValue({ trustId: 'tr_flush_1', delta: {} });
+    const initialToken = tokenWithPolicy();
+    const issueMock = jest.fn().mockResolvedValueOnce(initialToken);
+    (client as any).reanchor = reanchorMock;
+    (client as any).getIntentToken = issueMock;
+    (client as any).capturePlan = (_llm: string, _goal: string, plan: any) => plan;
+
+    // First plan — initial mint
+    await s.startPlan([{ name: 'echo' }], 'goal');
+    expect(reanchorMock).not.toHaveBeenCalled();
+    expect(issueMock).toHaveBeenCalledTimes(1);
+
+    // Three growths — each should DEFER, not call reanchor
+    await s.startPlan([{ name: 'echo' }, { name: 'add_step' }], 'goal');
+    await s.startPlan([{ name: 'echo' }, { name: 'add_step' }, { name: 'verify' }], 'goal');
+    await s.startPlan([{ name: 'echo' }, { name: 'add_step' }, { name: 'verify' }, { name: 'commit' }], 'goal');
+    expect(reanchorMock).not.toHaveBeenCalled();
+
+    // Flush — should fire ONE reanchor with the latest plan
+    const result = await s.flushReanchor();
+    expect(result.fired).toBe(true);
+    expect(reanchorMock).toHaveBeenCalledTimes(1);
+    // The plan passed to reanchor should be the LATEST cumulative plan
+    const passedPlan = reanchorMock.mock.calls[0][1];
+    expect(Array.isArray(passedPlan?.steps)).toBe(true);
+    expect(passedPlan.steps.length).toBe(4);
+
+    // Second flush is a no-op (queue already drained)
+    const result2 = await s.flushReanchor();
+    expect(result2.fired).toBe(false);
+    expect(reanchorMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('Phase 4 A6: eager (default) granularity fires reanchor on every growth', async () => {
+    const client = makeClient();
+    // No reanchorGranularity option → defaults to 'eager'
+    const s = new ArmorIQSession(client, {
+      trueReanchor: true,
+      defaultMcpName: 'TestMcp',
+    });
+
+    const reanchorMock = jest.fn().mockResolvedValue({ trustId: 'tr_eager', delta: {} });
+    const issueMock = jest.fn().mockResolvedValueOnce(tokenWithPolicy());
+    (client as any).reanchor = reanchorMock;
+    (client as any).getIntentToken = issueMock;
+    (client as any).capturePlan = (_llm: string, _goal: string, plan: any) => plan;
+
+    await s.startPlan([{ name: 'echo' }], 'goal'); // initial mint
+    await s.startPlan([{ name: 'echo' }, { name: 'add_step' }], 'goal');
+    await s.startPlan([{ name: 'echo' }, { name: 'add_step' }, { name: 'verify' }], 'goal');
+
+    expect(reanchorMock).toHaveBeenCalledTimes(2); // one per growth
+    // flushReanchor in eager mode is a no-op
+    const r = await s.flushReanchor();
+    expect(r.fired).toBe(false);
+  });
+
+  it('Phase 4 A6: deferred + autoReanchor (legacy v2) still re-mints per growth, defers ONLY the delta', async () => {
+    const client = makeClient();
+    const s = new ArmorIQSession(client, {
+      // autoReanchor flag removed — always true; trueReanchor opt-in stays.
+      trueReanchor: false,
+      reanchorGranularity: 'deferred',
+      defaultMcpName: 'TestMcp',
+    });
+
+    const reanchorMock = jest.fn().mockResolvedValue({ trustId: 'tr_v2', delta: {} });
+    const issueMock = jest
+      .fn()
+      .mockResolvedValueOnce(tokenWithPolicy())
+      .mockResolvedValueOnce(tokenWithPolicy())
+      .mockResolvedValueOnce(tokenWithPolicy());
+    (client as any).reanchor = reanchorMock;
+    (client as any).getIntentToken = issueMock;
+    (client as any).capturePlan = (_llm: string, _goal: string, plan: any) => plan;
+
+    await s.startPlan([{ name: 'echo' }], 'goal'); // initial mint
+    await s.startPlan([{ name: 'echo' }, { name: 'add_step' }], 'goal'); // re-mint, defer delta
+    await s.startPlan([{ name: 'echo' }, { name: 'add_step' }, { name: 'verify' }], 'goal'); // re-mint, overwrite pending
+
+    // re-mints happened (legacy v2 needs fresh step_proofs each time)
+    expect(issueMock).toHaveBeenCalledTimes(3);
+    // delta NOT yet fired
+    expect(reanchorMock).not.toHaveBeenCalled();
+
+    await s.flushReanchor();
+    expect(reanchorMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('continues to mint a new token even if reanchor delta record fails', async () => {
+    const client = makeClient();
+    const s = new ArmorIQSession(client, { trueReanchor: false, defaultMcpName: 'TestMcp' });
+
+    const reanchorMock = jest.fn().mockRejectedValue(new Error('iap unreachable'));
+    const issueMock = jest
+      .fn()
+      .mockResolvedValueOnce(tokenWithPolicy())
+      .mockResolvedValueOnce(tokenWithPolicy());
+    (client as any).reanchor = reanchorMock;
+    (client as any).getIntentToken = issueMock;
+    (client as any).capturePlan = (_llm: string, _goal: string, plan: any) => plan;
+
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    await s.startPlan([{ name: 'echo' }], 'goal');
+    await s.startPlan([{ name: 'echo' }, { name: 'add_step' }], 'goal');
+
+    expect(reanchorMock).toHaveBeenCalledTimes(1);
+    expect(issueMock).toHaveBeenCalledTimes(2); // re-mint still happened
+    warn.mockRestore();
+  });
+});

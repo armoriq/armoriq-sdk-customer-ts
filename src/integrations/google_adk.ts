@@ -50,6 +50,12 @@ export interface ArmorIQADKOptions {
   mode?: SessionMode;
   llm?: string;
   agentName?: string;
+  /**
+   * Phase 4 C5c — TRUE reanchor mode. When true, plan growth records a
+   * delta and SKIPS the re-mint (single JWT continues across chain).
+   * Requires C5a + C5b backend infrastructure. See SessionOptions.
+   */
+  trueReanchor?: boolean;
 }
 
 /**
@@ -71,6 +77,11 @@ export class ArmorIQADK {
   public readonly llm: string;
   public readonly validitySeconds: number;
   public readonly defaultMcpName?: string;
+  // autoReanchor flag removed 2026-05-13 — always on. Property retained
+  // as `readonly = true` so any caller reading factory.autoReanchor still
+  // observes the same value, but no env or option toggles it.
+  public readonly autoReanchor = true;
+  public readonly trueReanchor: boolean;
   private customParser?: ToolNameParser;
   private bootstrapData?: Record<string, any>;
 
@@ -89,6 +100,7 @@ export class ArmorIQADK {
     this.validitySeconds = opts.validitySeconds ?? 300;
     this.mode = opts.mode ?? 'sdk';
     this.llm = opts.llm ?? 'agent';
+    this.trueReanchor = opts.trueReanchor ?? true;
   }
 
   async bootstrap(): Promise<Record<string, any>> {
@@ -188,6 +200,7 @@ export class ArmorIQADKBundle {
         llm: this.factory.llm,
         toolNameParser: this.parser,
         defaultMcpName: this.factory.defaultMcpName,
+        trueReanchor: this.factory.trueReanchor,
       };
       this.session = this.scope.startSession(opts);
     }
