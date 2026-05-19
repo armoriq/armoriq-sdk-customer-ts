@@ -50,6 +50,12 @@ export interface ArmorIQADKOptions {
   mode?: SessionMode;
   llm?: string;
   agentName?: string;
+  /**
+   * Phase 4 C5c — TRUE reanchor mode. When true, plan growth records a
+   * delta and SKIPS the re-mint (single JWT continues across chain).
+   * Requires C5a + C5b backend infrastructure. See SessionOptions.
+   */
+  trueReanchor?: boolean;
 }
 
 /**
@@ -71,13 +77,15 @@ export class ArmorIQADK {
   public readonly llm: string;
   public readonly validitySeconds: number;
   public readonly defaultMcpName?: string;
+  // autoReanchor flag removed 2026-05-13 — always on. Property retained
+  // as `readonly = true` so any caller reading factory.autoReanchor still
+  // observes the same value, but no env or option toggles it.
+  public readonly autoReanchor = true;
+  public readonly trueReanchor: boolean;
   private customParser?: ToolNameParser;
   private bootstrapData?: Record<string, any>;
-  private explicitAgentName: boolean;
 
   constructor(opts: ArmorIQADKOptions) {
-    const agentName = opts.agentName || process.env.AGENT_ID || '';
-    this.explicitAgentName = !!agentName;
     this.client = new ArmorIQClient({
       apiKey: opts.apiKey,
       backendEndpoint: opts.backendEndpoint,
@@ -85,41 +93,30 @@ export class ArmorIQADK {
       proxyEndpoint: opts.proxyEndpoint ?? opts.backendEndpoint,
       useProduction: opts.useProduction ?? true,
       userId: 'agent',
-      agentId: agentName || 'agent',
+      agentId: opts.agentName || 'agent',
     });
     this.defaultMcpName = opts.defaultMcpName;
     this.customParser = opts.toolNameParser;
     this.validitySeconds = opts.validitySeconds ?? 300;
     this.mode = opts.mode ?? 'sdk';
     this.llm = opts.llm ?? 'agent';
+    this.trueReanchor = opts.trueReanchor ?? true;
   }
 
   async bootstrap(): Promise<Record<string, any>> {
     if (!this.bootstrapData) {
       this.bootstrapData = await this.client.bootstrap();
       const orgName = this.bootstrapData.org?.name ?? 'unknown';
-
-      // Auto-resolve agentId from bootstrap only when not explicitly provided.
-      // The agents list (new in bootstrap response) is authoritative — the
-      // legacy agent.name field returned the API key's display name which
-      // caused cross-agent policy attribution (#199).
-      if (!this.explicitAgentName) {
-        const agents: Array<{ agentId: string; name: string }> = this.bootstrapData.agents ?? [];
-        const single = agents.length === 1 ? agents[0] : null;
-        const fallback = this.bootstrapData.agent?.name;
-        const resolved = single?.name ?? fallback;
-        if (resolved) {
-          this.client._setAgentId(resolved);
-        }
+      const agentName = this.bootstrapData.agent?.name;
+      if (agentName) {
+        this.client._setAgentId(agentName);
       }
-
-      const resolvedAgent = this.client.getAgentId?.() ?? 'unknown';
       const mcps = Array.isArray(this.bootstrapData.mcps)
         ? this.bootstrapData.mcps.map((m: any) => m.name)
         : [];
       const toolMapSize = Object.keys(this.bootstrapData.toolMap ?? {}).length;
       console.info(
-        `[armoriq] bootstrap: org=${orgName} agent=${resolvedAgent} mcps=${JSON.stringify(mcps)} toolMap=${toolMapSize}`,
+        `[armoriq] bootstrap: org=${orgName} agent=${agentName ?? 'unknown'} mcps=${JSON.stringify(mcps)} toolMap=${toolMapSize}`,
       );
     }
     return this.bootstrapData!;
@@ -203,6 +200,7 @@ export class ArmorIQADKBundle {
         llm: this.factory.llm,
         toolNameParser: this.parser,
         defaultMcpName: this.factory.defaultMcpName,
+        trueReanchor: this.factory.trueReanchor,
       };
       this.session = this.scope.startSession(opts);
     }
