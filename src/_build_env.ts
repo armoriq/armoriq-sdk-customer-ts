@@ -1,13 +1,21 @@
 /**
  * Build-time environment marker (matches armoriq-sdk-customer/_build_env.py).
  *
- * This file is the ONLY difference between the `dev` and `main` branches.
- * Merging dev → main conflicts on the `ARMORIQ_ENV` constant below —
- * that's intentional, so the release owner consciously flips the default
+ * This file is one of two intentional divergence points between the
+ * `dev` and `main` branches. Merging dev → main will conflict here and
+ * in `package.json` (different `version` + `bin` name) — that's
+ * intentional, so the release owner consciously flips both defaults
  * before publishing prod.
  *
- *   main branch  →  ARMORIQ_ENV = "production"  (prod URLs; published as stable)
- *   dev  branch  →  ARMORIQ_ENV = "staging"     (staging URLs; published as -dev)
+ *   main branch  →  ARMORIQ_ENV = "production"  (prod URLs; published as @armoriq/sdk)
+ *                   package.json bin = "armoriq"
+ *   dev  branch  →  ARMORIQ_ENV = "staging"     (staging URLs; published as @armoriq/sdk-dev)
+ *                   package.json bin = "armoriq-dev"
+ *
+ * The dev branch's bin is renamed to `armoriq-dev` so it can coexist
+ * with the prod `@armoriq/sdk` on the same machine without npm-bin
+ * collisions (which would otherwise cause silent PATH shadowing — a
+ * staging-targeted plugin would mint prod-scoped credentials).
  *
  * The baked constant is the branch-baked default. Set ARMORIQ_ENV=local
  * (or staging/production) in your shell to override at runtime. Per-
@@ -17,7 +25,7 @@
 
 export type EnvName = 'production' | 'staging' | 'local';
 
-export const ARMORIQ_ENV: EnvName = 'production';
+export const ARMORIQ_ENV: EnvName = 'staging';
 
 // Endpoint table — keep in sync with GCP Cloud Run domain mappings.
 //   prod:
