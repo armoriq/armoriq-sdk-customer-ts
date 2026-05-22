@@ -78,6 +78,17 @@ export {
   DEFAULT_PROXY_URL,
 } from './config';
 
-export const VERSION = '0.3.0';
+export {
+  verifyCopilotStudioSignature,
+  translateCopilotStudioPayload,
+  toCopilotStudioDecision,
+  CopilotStudioPayload,
+  CopilotStudioVerifyArgs,
+  CopilotStudioVerifyResult,
+  CopilotStudioDecision,
+  TranslatedToolCall,
+} from './integrations/microsoft_copilot';
+
+export const VERSION = '0.4.0';
 export const AUTHOR = 'ArmorIQ Team';
 export const EMAIL = 'license@armoriq.io';
