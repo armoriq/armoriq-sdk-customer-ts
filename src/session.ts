@@ -31,6 +31,45 @@ export interface SessionOptions {
   validitySeconds?: number;
   llm?: string;
   mode?: SessionMode;
+  /**
+   * Phase 4 C5c — TRUE reanchor mode.
+   *
+   * When true, plan growth records a ReAnchor delta and SKIPS the re-mint
+   * entirely. The same JWT continues; the proxy walks the signed delta
+   * chain to verify continuity. This is what the IAP paper §"Trust Update
+   * Primitive" actually specifies: one HTTP call per growth, one JWT
+   * spanning the chain, audit lineage at zero net cost.
+   *
+   * Requires:
+   *   - csrg-iap with C5a chain-aware verify_action (delta_chain support)
+   *   - armoriq-proxy-server with C5b DeltaChainCacheService
+   *   - conmap-auto with GET /iap/trust/chain endpoint
+   *
+   * If any of those are missing, set trueReanchor=false and rely on the
+   * pragmatic v2 (record delta + remint) which works on older infra.
+   *
+   * Default true as of 2026-05-17 post-soak (C5 chain validation fully shipped
+   * across SDK / proxy / csrg-iap / conmap-auto). ARMORIQ_TRUE_REANCHOR env
+   * fallback removed — pass `trueReanchor: false` explicitly to opt out.
+   */
+  trueReanchor?: boolean;
+  /**
+   * Phase 4 A6 — reanchor granularity.
+   *
+   *  - 'eager'    (default): every plan growth fires a reanchor immediately.
+   *               Required when mid-turn tool calls run against newly
+   *               declared steps (the typical ADK loop pattern).
+   *  - 'deferred': accumulate plan growths in memory; fire ONE reanchor
+   *               at flushReanchor() (called from Stop hook or explicitly
+   *               by the consumer). Saves N-1 calls per turn for multi-
+   *               growth turns. Safe when the LLM declares the plan up
+   *               front and only mid-turn growths are *additions* of tools
+   *               that won't fire until next turn (typical Claude Code).
+   *
+   * Default 'eager'. Reads ARMORIQ_REANCHOR_GRANULARITY env var if option
+   * unset.
+   */
+  reanchorGranularity?: 'eager' | 'deferred';
 }
 
 export interface EnforceResult {
@@ -60,6 +99,15 @@ export class ArmorIQSession {
   private validitySeconds: number;
   private llm: string;
   private mode: SessionMode;
+  // autoReanchor flag removed 2026-05-13 — auto-reanchor is always-on now
+  // that the intermediate signing key (Change 1) makes signing sub-ms.
+  private readonly autoReanchor = true;
+  private trueReanchor: boolean;
+  private reanchorGranularity: 'eager' | 'deferred';
+  // Phase 4 A6: when granularity='deferred', hold the latest plan here and
+  // flush at flushReanchor() time. We coalesce N successive growths into
+  // one reanchor by always overwriting with the latest plan.
+  private pendingReanchorPlan?: any;
   private stepIndex = 0;
   private currentPlanHash?: string;
   private currentToken?: IntentToken;
@@ -74,6 +122,11 @@ export class ArmorIQSession {
     this.validitySeconds = o.validitySeconds ?? 3600;
     this.llm = o.llm ?? 'agent';
     this.mode = o.mode ?? 'local';
+    this.trueReanchor = o.trueReanchor ?? true;
+    const granEnv =
+      (typeof process !== 'undefined' && process.env?.ARMORIQ_REANCHOR_GRANULARITY) || '';
+    this.reanchorGranularity =
+      o.reanchorGranularity ?? (granEnv === 'deferred' ? 'deferred' : 'eager');
   }
 
   // ─── Plan capture ──────────────────────────────────────────────
@@ -106,6 +159,75 @@ export class ArmorIQSession {
     }
 
     const planCapture = this.client.capturePlan(this.llm, goal ?? this.llm, plan);
+
+    // Phase 4 A6 — deferred granularity: stash the latest plan, do not call
+    // reanchor yet. The next flushReanchor() (typically at Stop hook in
+    // armorClaude or at session.report end-of-turn for ADK) coalesces all
+    // accumulated growths into one delta. Saves N-1 calls per turn.
+    const wantsReanchor =
+      (this.trueReanchor || this.autoReanchor) && this.currentToken;
+    const deferred = this.reanchorGranularity === 'deferred';
+
+    if (wantsReanchor && deferred) {
+      // Always overwrite — coalescing collapses successive plans to the
+      // latest. The chain still records each ReAnchor at flush time as
+      // delta(prev_anchor → final_plan), which is what auditors care
+      // about (state-at-end-of-turn, not every intermediate proposal).
+      this.pendingReanchorPlan = plan;
+      // For trueReanchor in deferred mode: still skip the re-mint —
+      // continuation is the whole point. Update plan hash now so subsequent
+      // enforceLocal sees the new plan.
+      if (this.trueReanchor) {
+        this.currentPlanHash = h;
+        this.stepIndex = 0;
+        return this.currentToken!;
+      }
+      // For autoReanchor (pragmatic v2) in deferred mode: still need to
+      // re-mint because step_proofs are baked at issuance. Skip the
+      // delta call here; flushReanchor() catches up later.
+      const tokenA = await this.client.getIntentToken(planCapture, undefined, this.validitySeconds);
+      this.currentPlanHash = h;
+      this.currentToken = tokenA;
+      this.stepIndex = 0;
+      return tokenA;
+    }
+
+    // Phase 4 C5c — TRUE reanchor (eager): skip re-mint entirely.
+    // When trueReanchor is on AND we already have a token, just record the
+    // delta and continue with the same JWT. The proxy will walk the signed
+    // chain to verify continuity. One HTTP call instead of two; JWT identity
+    // preserved across the chain (paper's actual C3).
+    if (this.trueReanchor && this.currentToken) {
+      try {
+        await this.client.reanchor(this.currentToken, plan as any, 'plan grew (true-reanchor)');
+        // Update local state without re-minting. The JWT stays the same;
+        // only currentPlanHash advances so subsequent enforceLocal /
+        // dispatch calls see the new plan.
+        this.currentPlanHash = h;
+        this.stepIndex = 0;
+        return this.currentToken;
+      } catch (err) {
+        // If the delta record itself failed (network, signing error), fall
+        // through to the legacy re-mint path so the agent isn't stranded.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[armoriq] true-reanchor failed; falling back to re-mint: ${msg}`);
+      }
+    }
+
+    // Auto-reanchor (pragmatic v2): when the plan evolves mid-session and
+    // the flag is on, record a Trust Update ReAnchor delta so the audit log
+    // preserves the lineage between successive plan hashes. We re-mint the
+    // working token afterwards because (without C5c trueReanchor) the proxy
+    // pins to the JWT's plan_hash and step_proofs are baked at issuance.
+    if (this.autoReanchor && this.currentToken) {
+      try {
+        await this.client.reanchor(this.currentToken, plan as any, 'plan grew mid-session');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[armoriq] auto-reanchor delta failed (continuing): ${msg}`);
+      }
+    }
+
     const token = await this.client.getIntentToken(planCapture, undefined, this.validitySeconds);
     this.currentPlanHash = h;
     this.currentToken = token;
@@ -607,6 +729,52 @@ export class ArmorIQSession {
     this.mcpByAction.clear();
     this.declaredTools.clear();
     this.stepIndex = 0;
+    this.pendingReanchorPlan = undefined;
+  }
+
+  /**
+   * Phase 4 A6 — flush any pending coalesced reanchor.
+   *
+   * Call this at the request boundary (Stop hook in armorClaude, end of
+   * turn in ADK consumers). If reanchorGranularity='deferred' and a plan
+   * growth was observed, this fires ONE reanchor delta covering the
+   * cumulative change from the prior anchor to the latest plan.
+   *
+   * Returns:
+   *   - { fired: true, trustId } when a delta was recorded
+   *   - { fired: false } when there was nothing pending or auto/true
+   *     reanchor is off
+   */
+  async flushReanchor(): Promise<{ fired: boolean; trustId?: string }> {
+    if (!this.pendingReanchorPlan) {
+      return { fired: false };
+    }
+    if (!this.currentToken) {
+      this.pendingReanchorPlan = undefined;
+      return { fired: false };
+    }
+    if (!this.trueReanchor && !this.autoReanchor) {
+      this.pendingReanchorPlan = undefined;
+      return { fired: false };
+    }
+
+    const planToFlush = this.pendingReanchorPlan;
+    // Optimistically clear so a retry in the caller doesn't double-fire.
+    this.pendingReanchorPlan = undefined;
+    try {
+      const result = await this.client.reanchor(
+        this.currentToken,
+        planToFlush as any,
+        'flush at request boundary',
+      );
+      return { fired: true, trustId: (result as any)?.trustId };
+    } catch (err) {
+      // Best-effort: log and stay silent so a flaky IAP doesn't gate
+      // session lifecycle.
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[armoriq] flushReanchor failed: ${msg}`);
+      return { fired: false };
+    }
   }
 
   get currentTokenValue(): IntentToken | undefined {
