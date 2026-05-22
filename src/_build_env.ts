@@ -17,7 +17,7 @@
 
 export type EnvName = 'production' | 'staging' | 'local';
 
-export const ARMORIQ_ENV: EnvName = 'production';
+export const ARMORIQ_ENV: EnvName = 'staging';
 
 // Endpoint table — keep in sync with GCP Cloud Run domain mappings.
 //   prod:
