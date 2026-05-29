@@ -21,32 +21,136 @@ import {
 } from '../../credentials';
 import { CHECK, CROSS, WARN, CLIError, out, backendBase } from '../util';
 
-const SUCCESS_HTML = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>ArmorIQ</title>
+const PRODUCT_LABELS: Record<string, string> = {
+  armorclaude: 'ArmorClaude',
+  armorcodex: 'ArmorCodex',
+  armorcopilot: 'ArmorCopilot',
+  armorclaw: 'ArmorClaw',
+  platform: 'ArmorIQ Platform',
+  sdk: 'ArmorIQ SDK',
+};
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c,
+  );
+}
+
+function renderSuccessHtml(opts: { email?: string; product?: string; orgId?: string }): string {
+  const productKey = (opts.product ?? '').toLowerCase().trim();
+  const productLabel = PRODUCT_LABELS[productKey] ?? null;
+  const emailHtml = opts.email
+    ? `<div class="email">${escapeHtml(opts.email)}</div>`
+    : '';
+  const productHtml = productLabel
+    ? `<div class="chip">Connected to ${escapeHtml(productLabel)}</div>`
+    : '';
+  const year = new Date().getFullYear();
+  return `<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Authorized · ArmorIQ</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 27 27"><path d="M6.25 16.18 9.14 11.97 11.83 15.88 14.53 11.97 17.17 15.88 20.06 11.71" stroke="#D97D55" stroke-width="2" fill="none" stroke-linecap="round"/><circle cx="13.15" cy="13.85" r="12.15" stroke="#D97D55" stroke-width="2" fill="none"/></svg>`,
+)}">
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-         display: flex; align-items: center; justify-content: center; height: 100vh;
-         margin: 0; background: #f8fafc; color: #1e293b; }
-  .card { text-align: center; padding: 3rem; background: white;
-          border-radius: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-          max-width: 400px; }
-  .check { width: 64px; height: 64px; background: #dcfce7; border-radius: 50%;
-           display: flex; align-items: center; justify-content: center;
-           margin: 0 auto 1.5rem; }
-  .check svg { width: 32px; height: 32px; color: #16a34a; }
-  h2 { margin: 0 0 0.5rem; font-size: 1.25rem; }
-  p { margin: 0; font-size: 0.875rem; color: #64748b; }
-</style></head><body>
-<div class="card">
-  <div class="check">
-    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-    </svg>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif;
+    background: #fafafa;
+    color: #111;
+    display: flex; flex-direction: column;
+    min-height: 100vh;
+  }
+  header {
+    padding: 28px 32px; display: flex; align-items: center; gap: 10px;
+  }
+  header svg.mark { width: 32px; height: 32px; }
+  header .wordmark { font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
+  main {
+    flex: 1; display: flex; align-items: center; justify-content: center; padding: 32px;
+  }
+  .card {
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 14px;
+    padding: 40px 36px; max-width: 460px; width: 100%; text-align: center;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  .check {
+    width: 64px; height: 64px; border-radius: 999px;
+    background: #dcfce7; color: #16a34a;
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 18px;
+  }
+  .check svg { width: 32px; height: 32px; }
+  h1 { margin: 0 0 8px; font-size: 22px; letter-spacing: -0.01em; }
+  p.lead { margin: 0 0 4px; color: #4b5563; font-size: 14px; line-height: 1.5; }
+  .email { font-size: 13px; color: #111; font-weight: 600; margin-top: 14px; }
+  .chip {
+    display: inline-block; margin-top: 10px;
+    padding: 4px 10px; border-radius: 999px;
+    background: #f3f4f6; color: #374151;
+    font-size: 12px; font-weight: 500;
+  }
+  .hint {
+    margin-top: 20px; padding-top: 18px; border-top: 1px solid #f1f5f9;
+    color: #6b7280; font-size: 12px;
+  }
+  footer {
+    padding: 22px 32px; color: #6b7280; font-size: 12px;
+    display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+    border-top: 1px solid #eef0f3;
+  }
+  footer nav a { color: #6b7280; text-decoration: none; margin-left: 16px; }
+  footer nav a:hover { color: #111; text-decoration: underline; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #0a0e1a; color: #e5e7eb; }
+    header .wordmark { color: #fff; }
+    .card { background: #111827; border-color: #1f2937; box-shadow: none; }
+    p.lead, .hint, footer { color: #9ca3af; }
+    .email { color: #f3f4f6; }
+    .chip { background: #1f2937; color: #d1d5db; }
+    footer { border-top-color: #1f2937; }
+    footer nav a { color: #9ca3af; }
+    footer nav a:hover { color: #fff; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <svg class="mark" viewBox="0 0 27 27" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <path d="M6.25 16.18 9.14 11.97 11.83 15.88 14.53 11.97 17.17 15.88 20.06 11.71" stroke="#D97D55" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="13.15" cy="13.85" r="12.15" stroke="#D97D55" stroke-width="2"/>
+  </svg>
+  <span class="wordmark">ArmorIQ</span>
+</header>
+<main>
+  <div class="card">
+    <div class="check">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M5 13l4 4L19 7"/>
+      </svg>
+    </div>
+    <h1>You're all set</h1>
+    <p class="lead">Your device is now connected to ArmorIQ.</p>
+    ${emailHtml}
+    ${productHtml}
+    <div class="hint">You can close this tab and return to your terminal.</div>
   </div>
-  <h2>Authorized</h2>
-  <p>You can close this tab and return to your terminal.</p>
-</div>
+</main>
+<footer>
+  <div>© ${year} ArmorIQ Inc.</div>
+  <nav>
+    <a href="https://docs.armoriq.ai" target="_blank" rel="noreferrer">Docs</a>
+    <a href="https://dev.armoriq.ai" target="_blank" rel="noreferrer">Dashboard</a>
+    <a href="https://armoriq.ai/privacy" target="_blank" rel="noreferrer">Privacy</a>
+    <a href="https://armoriq.ai/terms" target="_blank" rel="noreferrer">Terms</a>
+  </nav>
+</footer>
 </body></html>`;
+}
 
 function findFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -74,6 +178,7 @@ interface CallbackResult {
 
 function startCallbackServer(
   port: number,
+  product?: string,
 ): { server: http.Server; once: Promise<CallbackResult> } {
   let resolveResult: (r: CallbackResult) => void;
   const once = new Promise<CallbackResult>((resolve) => {
@@ -83,8 +188,15 @@ function startCallbackServer(
     const url = new URL(req.url ?? '/', `http://localhost:${port}`);
     if (url.pathname === '/callback') {
       const params = Object.fromEntries(url.searchParams.entries());
+      const callbackProduct = params.product || product;
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(SUCCESS_HTML);
+      res.end(
+        renderSuccessHtml({
+          email: params.email,
+          product: callbackProduct,
+          orgId: params.org_id,
+        }),
+      );
       const result: CallbackResult = {
         api_key: params.key,
         email: params.email,
@@ -117,12 +229,17 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-export async function cmdLogin(args: { backend?: string; org?: string }): Promise<number> {
+export async function cmdLogin(args: {
+  backend?: string;
+  org?: string;
+  product?: string;
+}): Promise<number> {
   const backend = (args.backend ?? process.env.ARMORIQ_BACKEND_URL ?? backendBase()).replace(
     /\/+$/,
     '',
   );
   const requestedOrg = (args.org ?? '').trim();
+  const product = (args.product ?? process.env.ARMORIQ_PRODUCT ?? '').trim();
 
   out('');
   out('  \x1b[1m\x1b[36m┃ ArmorIQ Login\x1b[0m');
@@ -130,7 +247,7 @@ export async function cmdLogin(args: { backend?: string; org?: string }): Promis
 
   const port = await findFreePort();
   const callbackUrl = `http://localhost:${port}/callback`;
-  const { server, once: callbackOnce } = startCallbackServer(port);
+  const { server, once: callbackOnce } = startCallbackServer(port, product);
 
   let dc: any;
   try {
@@ -150,6 +267,7 @@ export async function cmdLogin(args: { backend?: string; org?: string }): Promis
   let browserUrl =
     `${verification_uri_complete}${sep}callback=${encodeURIComponent(callbackUrl)}`;
   if (requestedOrg) browserUrl += `&org=${encodeURIComponent(requestedOrg)}`;
+  if (product) browserUrl += `&product=${encodeURIComponent(product)}`;
 
   out('  Opening browser...\n');
   openBrowser(browserUrl);
