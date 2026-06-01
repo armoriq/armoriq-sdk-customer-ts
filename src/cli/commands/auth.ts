@@ -55,7 +55,7 @@ function renderSuccessHtml(opts: { email?: string; product?: string; orgId?: str
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 27 27"><path d="M6.25 16.18 9.14 11.97 11.83 15.88 14.53 11.97 17.17 15.88 20.06 11.71" stroke="#D97D55" stroke-width="2" fill="none" stroke-linecap="round"/><circle cx="13.15" cy="13.85" r="12.15" stroke="#D97D55" stroke-width="2" fill="none"/></svg>`,
 )}">
 <style>
-  :root { color-scheme: light dark; }
+  :root { color-scheme: light; }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
@@ -66,10 +66,11 @@ function renderSuccessHtml(opts: { email?: string; product?: string; orgId?: str
     min-height: 100vh;
   }
   header {
-    padding: 28px 32px; display: flex; align-items: center; gap: 10px;
+    padding: 48px 32px 24px;
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
   }
-  header svg.mark { width: 32px; height: 32px; }
-  header .wordmark { font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
+  header svg.mark { width: 72px; height: 72px; }
+  header .wordmark { font-weight: 700; font-size: 26px; letter-spacing: -0.02em; color: #111; }
   main {
     flex: 1; display: flex; align-items: center; justify-content: center; padding: 32px;
   }
@@ -105,17 +106,6 @@ function renderSuccessHtml(opts: { email?: string; product?: string; orgId?: str
   }
   footer nav a { color: #6b7280; text-decoration: none; margin-left: 16px; }
   footer nav a:hover { color: #111; text-decoration: underline; }
-  @media (prefers-color-scheme: dark) {
-    body { background: #0a0e1a; color: #e5e7eb; }
-    header .wordmark { color: #fff; }
-    .card { background: #111827; border-color: #1f2937; box-shadow: none; }
-    p.lead, .hint, footer { color: #9ca3af; }
-    .email { color: #f3f4f6; }
-    .chip { background: #1f2937; color: #d1d5db; }
-    footer { border-top-color: #1f2937; }
-    footer nav a { color: #9ca3af; }
-    footer nav a:hover { color: #fff; }
-  }
 </style>
 </head>
 <body>
