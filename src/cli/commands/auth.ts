@@ -65,15 +65,18 @@ function renderSuccessHtml(opts: { email?: string; product?: string; orgId?: str
     display: flex; flex-direction: column;
     min-height: 100vh;
   }
-  header {
-    padding: 48px 32px 24px;
+  main {
+    flex: 1;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 28px;
+    padding: 48px 32px;
+  }
+  .brand {
     display: flex; flex-direction: column; align-items: center; gap: 14px;
   }
-  header svg.mark { width: 72px; height: 72px; }
-  header .wordmark { font-weight: 700; font-size: 26px; letter-spacing: -0.02em; color: #111; }
-  main {
-    flex: 1; display: flex; align-items: center; justify-content: center; padding: 32px;
-  }
+  .brand svg.mark { width: 80px; height: 80px; }
+  .brand .wordmark { font-weight: 700; font-size: 34px; letter-spacing: -0.025em; color: #111; }
   .card {
     background: #fff; border: 1px solid #e5e7eb; border-radius: 14px;
     padding: 40px 36px; max-width: 460px; width: 100%; text-align: center;
@@ -109,14 +112,14 @@ function renderSuccessHtml(opts: { email?: string; product?: string; orgId?: str
 </style>
 </head>
 <body>
-<header>
-  <svg class="mark" viewBox="0 0 27 27" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-    <path d="M6.25 16.18 9.14 11.97 11.83 15.88 14.53 11.97 17.17 15.88 20.06 11.71" stroke="#D97D55" stroke-width="2" stroke-linecap="round"/>
-    <circle cx="13.15" cy="13.85" r="12.15" stroke="#D97D55" stroke-width="2"/>
-  </svg>
-  <span class="wordmark">ArmorIQ</span>
-</header>
 <main>
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 27 27" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M6.25 16.18 9.14 11.97 11.83 15.88 14.53 11.97 17.17 15.88 20.06 11.71" stroke="#D97D55" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="13.15" cy="13.85" r="12.15" stroke="#D97D55" stroke-width="2"/>
+    </svg>
+    <span class="wordmark">ArmorIQ</span>
+  </div>
   <div class="card">
     <div class="check">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
