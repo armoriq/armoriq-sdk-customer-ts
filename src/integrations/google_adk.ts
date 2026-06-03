@@ -237,6 +237,49 @@ export class ArmorIQADKBundle {
         }
       }
       if (toolCalls.length === 0) return null;
+
+      // ── PAP refinement gate (new, runs before mint) ─────────────────
+      // Only fires when the client is configured with a gateway URL or
+      // when conmap-auto has PAP_GATEWAY_URL set. Fail mode is owned
+      // by the client; refine() either throws or returns 'accepted'.
+      const client = this.factory.client;
+      const papEnabled = !!(client.papGatewayUrl) ||
+        process.env.ARMORIQ_PAP_FORCE === '1';
+      if (papEnabled) {
+        try {
+          const refineResult = await client.refine({
+            agentId: (client as any).agentId ?? 'unknown',
+            userPrompt: this.goal,
+            toolCalls: toolCalls.map(tc => ({ name: tc.name, input: tc.args })),
+          });
+          if (refineResult.decision === 'rejected') {
+            console.warn(
+              `[armoriq] PAP rejected plan user=${this.userEmail} ` +
+              `violations=[${refineResult.violations.join(',')}] ` +
+              `predicate_fails=${refineResult.predicateFails.length}`,
+            );
+            return {
+              kind: 'pap_rejected',
+              decision: refineResult.decision,
+              violations: refineResult.violations,
+              predicate_fails: refineResult.predicateFails,
+            };
+          }
+          console.info(
+            `[armoriq] PAP refine ok user=${this.userEmail} intent=${refineResult.intentId}`,
+          );
+        } catch (refineErr) {
+          console.warn(
+            `[armoriq] PAP refine failed (fail-${client.papFailMode}): ` +
+            `${(refineErr as Error).message}`,
+          );
+          if (client.papFailMode === 'closed') {
+            return { kind: 'pap_unavailable', error: (refineErr as Error).message };
+          }
+        }
+      }
+      // ────────────────────────────────────────────────────────────────
+
       await this.ensureSession().startPlan(toolCalls, this.goal);
       this.planMinted = true;
       console.info(`[armoriq] plan minted user=${this.userEmail} tools=${toolCalls.length}`);

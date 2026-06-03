@@ -333,4 +333,54 @@ export interface SDKConfig {
    * ARMORIQ_MCP_<SAFE_NAME>_* per-MCP env vars; constructor option wins.
    */
   mcpCredentials?: McpCredentialMap;
+
+  /**
+   * PAP gateway URL — when set, client.refine() routes through it before
+   * minting the intent token. Defaults to PAP_GATEWAY_URL env var if any.
+   * Leave undefined to skip PAP integration entirely.
+   */
+  papGatewayUrl?: string;
+
+  /**
+   * What client.refine() should do when papGatewayUrl is unreachable or
+   * unset. 'closed' (default) throws an error. 'open' logs a warning and
+   * returns decision:'accepted' so dev iteration isn't blocked.
+   */
+  papFailMode?: 'open' | 'closed';
+}
+
+// ── PAP refine() request / response types ─────────────────────────────────
+
+export interface PapToolCall {
+  name: string;
+  input?: Record<string, any>;
+}
+
+export interface PapAuthoritySnapshot {
+  interfaces?: string[];
+  constraints?: string[];
+}
+
+export interface PapRefineRequest {
+  agentId: string;
+  userPrompt: string;
+  toolCalls: PapToolCall[];
+  authoritySnapshot?: PapAuthoritySnapshot;
+}
+
+export interface PapPredicateHit {
+  predicate: string;
+  tool_name: string;
+  decision: 'pass' | 'fail';
+  reason: string;
+  args_summary?: string;
+}
+
+export interface PapRefineResult {
+  decision: 'accepted' | 'rejected' | 'escalated';
+  intentId: string | null;
+  violations: string[];
+  offendingInterfaces: string[];
+  predicateFails: PapPredicateHit[];
+  meta?: Record<string, any>;
 }
