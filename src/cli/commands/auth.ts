@@ -226,6 +226,7 @@ export async function cmdLogin(args: {
   backend?: string;
   org?: string;
   product?: string;
+  force?: boolean;
 }): Promise<number> {
   const backend = (args.backend ?? process.env.ARMORIQ_BACKEND_URL ?? backendBase()).replace(
     /\/+$/,
@@ -233,6 +234,24 @@ export async function cmdLogin(args: {
   );
   const requestedOrg = (args.org ?? '').trim();
   const product = (args.product ?? process.env.ARMORIQ_PRODUCT ?? '').trim();
+
+  // Already authenticated? Skip the browser flow unless re-auth is forced or
+  // the user is switching org. Re-running `login` otherwise just re-opens the
+  // browser for no reason.
+  if (!args.force && !requestedOrg) {
+    const existing = loadCredentials();
+    if (existing) {
+      out('');
+      out(
+        `  ${CHECK} Already logged in as \x1b[1m${existing.email || 'unknown'}\x1b[0m (org: ${existing.orgId || 'unknown'})`,
+      );
+      out(
+        '  \x1b[2mRun \x1b[0m\x1b[1marmoriq login --force\x1b[0m\x1b[2m to re-authenticate, or \x1b[0m\x1b[1marmoriq logout\x1b[0m\x1b[2m first.\x1b[0m',
+      );
+      out('');
+      return 0;
+    }
+  }
 
   out('');
   out('  \x1b[1m\x1b[36m┃ ArmorIQ Login\x1b[0m');
