@@ -19,6 +19,8 @@ import {
   HoldInfo,
   McpCredential,
   McpCredentialMap,
+  PapRefineRequest,
+  PapRefineResult,
 } from './models';
 import {
   InvalidTokenException,
@@ -30,6 +32,17 @@ import {
   PolicyBlockedException,
   PolicyHoldException,
 } from './exceptions';
+
+/**
+ * Lightweight error used by the PAP refine() path when fail-closed mode
+ * is active and the gateway is unreachable or returned an error.
+ */
+export class ArmorIQError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ArmorIQError';
+  }
+}
 import { resolveEndpoint, ARMORIQ_ENV } from './_build_env';
 
 /**
@@ -95,6 +108,15 @@ export class ArmorIQClient {
    */
   public userEmailOverride?: string;
 
+  /**
+   * Optional PAP gateway URL. If set, client.refine() uses it; otherwise
+   * the call goes to {backendEndpoint}/iap/sdk/preflight which proxies
+   * to whatever PAP_GATEWAY_URL conmap-auto is configured with.
+   */
+  public papGatewayUrl?: string;
+  /** 'closed' (default) throws on unreachable; 'open' warns + accepts. */
+  public papFailMode: 'open' | 'closed' = 'closed';
+
   constructor(options: Partial<SDKConfig> & { apiKey?: string; useProduction?: boolean } = {}) {
     // `useProduction: false` is a legacy escape hatch for local dev — treat
     // it as ARMORIQ_ENV=local unless the caller set the env var explicitly.
@@ -138,6 +160,16 @@ export class ArmorIQClient {
     this.userId = options.userId || process.env.USER_ID || '';
     this.agentId = options.agentId || process.env.AGENT_ID || '';
     this.contextId = options.contextId || process.env.CONTEXT_ID || 'default';
+
+    // PAP gateway integration — optional. If unset, refine() falls back to
+    // {backendEndpoint}/iap/sdk/preflight which lets conmap-auto own the
+    // fan-out to the gateway. Set papFailMode='open' in dev to skip
+    // throwing when the gateway isn't running yet.
+    this.papGatewayUrl =
+      options.papGatewayUrl ?? process.env.PAP_GATEWAY_URL ?? undefined;
+    this.papFailMode =
+      options.papFailMode ??
+      ((process.env.PAP_FAIL_MODE as 'open' | 'closed') || 'closed');
     // API key resolution order: explicit param → env var → credentials file → empty
     this.apiKey = options.apiKey || process.env.ARMORIQ_API_KEY || '';
     if (!this.apiKey) {
@@ -571,6 +603,99 @@ export class ArmorIQClient {
 
     console.log(`Plan captured with ${plan.steps?.length || 0} steps`);
     return capture;
+  }
+
+  /**
+   * NEW — PAP refinement. Call before getIntentToken() so the gateway can
+   * (a) run plan-level T_P ⊆ T_I refinement, (b) evaluate argument-level
+   * predicates, and (c) persist the decision so refine → token → execution
+   * is one audit chain.
+   *
+   * Endpoint: POST {backendEndpoint}/iap/sdk/preflight, which fans out to
+   * the configured pap-gateway-service /v1/refine.
+   *
+   * Fail-closed by default — throws if the gateway is unreachable. Pass
+   * { papFailMode: 'open' } in the SDK config to soften this for dev.
+   */
+  async refine(req: PapRefineRequest): Promise<PapRefineResult> {
+    const payload = {
+      agent_id: req.agentId,
+      user_prompt: req.userPrompt,
+      tool_calls: req.toolCalls,
+      authority_snapshot: req.authoritySnapshot,
+    };
+
+    const failMode: 'open' | 'closed' =
+      (this as any).papFailMode ?? 'closed';
+
+    const buildOpenFallback = (msg: string): PapRefineResult => {
+      console.warn(
+        `[armoriq] pap refine() unreachable (${msg}); fail-open — accepting plan`
+      );
+      return {
+        decision: 'accepted',
+        intentId: null,
+        violations: [],
+        offendingInterfaces: [],
+        predicateFails: [],
+        meta: { fail_open: true, error: msg },
+      };
+    };
+
+    let response: any;
+    try {
+      response = await this.httpClient.post(
+        `${this.backendEndpoint}/iap/sdk/preflight`,
+        payload,
+        {
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            'X-API-Key': this.apiKey,
+          },
+          timeout: 30000,
+          // Accept any status so we can branch on it explicitly below.
+          // Default axios behavior throws on 4xx/5xx — that lumps network
+          // outages and HTTP errors together, which the caller can't
+          // distinguish without inspecting the error shape.
+          validateStatus: () => true,
+        }
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (failMode === 'open') return buildOpenFallback(msg);
+      throw new ArmorIQError(`pap refine() transport error (fail-closed): ${msg}`);
+    }
+
+    const status: number = response?.status ?? 0;
+    const data = response?.data;
+
+    if (status < 200 || status >= 300) {
+      const detail =
+        (data && (data.detail || data.message || data.error)) ||
+        `HTTP ${status}`;
+      const msg = `HTTP ${status}: ${detail}`;
+      if (failMode === 'open' && status >= 500) {
+        // Only treat 5xx as fail-open material; 4xx is the caller's fault
+        // and silently accepting it would mask real client errors.
+        return buildOpenFallback(msg);
+      }
+      throw new ArmorIQError(`pap refine() failed (fail-closed): ${msg}`);
+    }
+
+    if (!data || typeof data !== 'object' || !data.decision) {
+      const msg = `malformed response from pap-gateway: ${JSON.stringify(data).slice(0, 200)}`;
+      if (failMode === 'open') return buildOpenFallback(msg);
+      throw new ArmorIQError(`pap refine() got malformed response (fail-closed): ${msg}`);
+    }
+
+    return {
+      decision: data.decision,
+      intentId: data.intent_id ?? null,
+      violations: data.violations ?? [],
+      offendingInterfaces: data.offending_interfaces ?? [],
+      predicateFails: data.predicate_fails ?? [],
+      meta: data.meta ?? {},
+    };
   }
 
   /**
