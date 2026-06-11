@@ -225,9 +225,21 @@ export class ArmorIQADKBundle {
     return this.session;
   }
 
-  private async afterModel(_callbackContext: any, llmResponse: any): Promise<unknown> {
+  private async afterModel(...adkArgs: any[]): Promise<unknown> {
     try {
       if (this.planMinted) return null;
+      // ADK callback signature drifted between versions. Older releases
+      // passed (callbackContext, llmResponse); current ADK (0.6+) passes
+      // a single { context, response } params object. Accept both.
+      let llmResponse: any;
+      if (adkArgs.length === 1 && adkArgs[0] && typeof adkArgs[0] === 'object') {
+        llmResponse =
+          adkArgs[0].response ??
+          adkArgs[0].llmResponse ??
+          adkArgs[0];
+      } else {
+        llmResponse = adkArgs[1] ?? adkArgs[0];
+      }
       const parts = llmResponse?.content?.parts ?? [];
       const toolCalls: ToolCall[] = [];
       for (const p of parts) {
@@ -238,14 +250,40 @@ export class ArmorIQADKBundle {
       }
       if (toolCalls.length === 0) return null;
 
-      // ── PAP refinement gate (new, runs before mint) ─────────────────
-      // Only fires when the client is configured with a gateway URL or
-      // when conmap-auto has PAP_GATEWAY_URL set. Fail mode is owned
-      // by the client; refine() either throws or returns 'accepted'.
+      // ── PAP refinement gate (runs before mint) ──────────────────────
+      // On rejection or fail-closed unavailability we MUST replace the
+      // LLM's response with a text-only one so the ADK agent loop sees
+      // no functionCall parts and skips tool execution. Returning a
+      // synthetic object like {kind:'pap_rejected'} from afterModel does
+      // NOT stop ADK from executing the original tool calls — it just
+      // logs and continues. The text replacement is the actual safety
+      // mechanism.
       const client = this.factory.client;
       const papEnabled = !!(client.papGatewayUrl) ||
         process.env.ARMORIQ_PAP_FORCE === '1';
       if (papEnabled) {
+        const buildRejectionResponse = (
+          reason: string,
+          details: Record<string, unknown>,
+        ) => {
+          const summary =
+            `[PAP] Plan blocked by Plan Assurance Plane: ${reason}. ` +
+            `No tools were invoked. Please revise your request.`;
+          return {
+            content: {
+              parts: [{ text: summary }],
+              role: 'model',
+            },
+            // Surface structured details on a non-standard field so audit
+            // pipelines / wrappers can pick them up without parsing the
+            // text. ADK ignores unknown fields on LlmResponse.
+            armoriqPapBlock: {
+              reason,
+              ...details,
+            },
+          };
+        };
+
         try {
           const refineResult = await client.refine({
             agentId: (client as any).agentId ?? 'unknown',
@@ -253,29 +291,35 @@ export class ArmorIQADKBundle {
             toolCalls: toolCalls.map(tc => ({ name: tc.name, input: tc.args })),
           });
           if (refineResult.decision === 'rejected') {
+            const violations = refineResult.violations.join(',') || 'rejected';
             console.warn(
               `[armoriq] PAP rejected plan user=${this.userEmail} ` +
-              `violations=[${refineResult.violations.join(',')}] ` +
+              `violations=[${violations}] ` +
               `predicate_fails=${refineResult.predicateFails.length}`,
             );
-            return {
-              kind: 'pap_rejected',
+            return buildRejectionResponse(violations, {
               decision: refineResult.decision,
               violations: refineResult.violations,
-              predicate_fails: refineResult.predicateFails,
-            };
+              predicateFails: refineResult.predicateFails,
+              intentId: refineResult.intentId,
+            });
           }
           console.info(
             `[armoriq] PAP refine ok user=${this.userEmail} intent=${refineResult.intentId}`,
           );
         } catch (refineErr) {
+          const msg = (refineErr as Error).message;
           console.warn(
-            `[armoriq] PAP refine failed (fail-${client.papFailMode}): ` +
-            `${(refineErr as Error).message}`,
+            `[armoriq] PAP refine failed (fail-${client.papFailMode}): ${msg}`,
           );
           if (client.papFailMode === 'closed') {
-            return { kind: 'pap_unavailable', error: (refineErr as Error).message };
+            return buildRejectionResponse(`pap_unavailable: ${msg}`, {
+              decision: 'rejected',
+              violations: ['pap_unavailable'],
+              predicateFails: [],
+            });
           }
+          // fail-open: fall through, continue with original tool calls.
         }
       }
       // ────────────────────────────────────────────────────────────────
@@ -418,7 +462,7 @@ export class ArmorIQADKBundle {
       beforeToolCallback: agent.beforeToolCallback,
       afterToolCallback: agent.afterToolCallback,
     };
-    agent.afterModelCallback = (...args: any[]) => this.afterModel(args[0], args[1]);
+    agent.afterModelCallback = (...args: any[]) => this.afterModel(...args);
     agent.beforeToolCallback = (...args: any[]) => {
       const a = args[0];
       // Require `tool` specifically — anything else means we're in legacy

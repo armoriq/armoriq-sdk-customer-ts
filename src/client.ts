@@ -625,8 +625,26 @@ export class ArmorIQClient {
       authority_snapshot: req.authoritySnapshot,
     };
 
+    const failMode: 'open' | 'closed' =
+      (this as any).papFailMode ?? 'closed';
+
+    const buildOpenFallback = (msg: string): PapRefineResult => {
+      console.warn(
+        `[armoriq] pap refine() unreachable (${msg}); fail-open — accepting plan`
+      );
+      return {
+        decision: 'accepted',
+        intentId: null,
+        violations: [],
+        offendingInterfaces: [],
+        predicateFails: [],
+        meta: { fail_open: true, error: msg },
+      };
+    };
+
+    let response: any;
     try {
-      const response = await this.httpClient.post(
+      response = await this.httpClient.post(
         `${this.backendEndpoint}/iap/sdk/preflight`,
         payload,
         {
@@ -635,35 +653,49 @@ export class ArmorIQClient {
             'X-API-Key': this.apiKey,
           },
           timeout: 30000,
+          // Accept any status so we can branch on it explicitly below.
+          // Default axios behavior throws on 4xx/5xx — that lumps network
+          // outages and HTTP errors together, which the caller can't
+          // distinguish without inspecting the error shape.
+          validateStatus: () => true,
         }
       );
-      const data = response.data as any;
-      return {
-        decision: data.decision,
-        intentId: data.intent_id ?? null,
-        violations: data.violations ?? [],
-        offendingInterfaces: data.offending_interfaces ?? [],
-        predicateFails: data.predicate_fails ?? [],
-        meta: data.meta ?? {},
-      };
     } catch (err) {
-      const failMode = (this as any).papFailMode ?? 'closed';
       const msg = err instanceof Error ? err.message : String(err);
-      if (failMode === 'open') {
-        console.warn(
-          `[armoriq] pap refine() unreachable (${msg}); fail-open — accepting plan`
-        );
-        return {
-          decision: 'accepted',
-          intentId: null,
-          violations: [],
-          offendingInterfaces: [],
-          predicateFails: [],
-          meta: { fail_open: true, error: msg },
-        };
+      if (failMode === 'open') return buildOpenFallback(msg);
+      throw new ArmorIQError(`pap refine() transport error (fail-closed): ${msg}`);
+    }
+
+    const status: number = response?.status ?? 0;
+    const data = response?.data;
+
+    if (status < 200 || status >= 300) {
+      const detail =
+        (data && (data.detail || data.message || data.error)) ||
+        `HTTP ${status}`;
+      const msg = `HTTP ${status}: ${detail}`;
+      if (failMode === 'open' && status >= 500) {
+        // Only treat 5xx as fail-open material; 4xx is the caller's fault
+        // and silently accepting it would mask real client errors.
+        return buildOpenFallback(msg);
       }
       throw new ArmorIQError(`pap refine() failed (fail-closed): ${msg}`);
     }
+
+    if (!data || typeof data !== 'object' || !data.decision) {
+      const msg = `malformed response from pap-gateway: ${JSON.stringify(data).slice(0, 200)}`;
+      if (failMode === 'open') return buildOpenFallback(msg);
+      throw new ArmorIQError(`pap refine() got malformed response (fail-closed): ${msg}`);
+    }
+
+    return {
+      decision: data.decision,
+      intentId: data.intent_id ?? null,
+      violations: data.violations ?? [],
+      offendingInterfaces: data.offending_interfaces ?? [],
+      predicateFails: data.predicate_fails ?? [],
+      meta: data.meta ?? {},
+    };
   }
 
   /**
