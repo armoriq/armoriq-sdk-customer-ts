@@ -78,6 +78,9 @@ export {
   DEFAULT_PROXY_URL,
 } from './config';
 
+export { ArmorIQMCPToolset } from './integrations/google_adk_mcp_toolset';
+export type { ArmorIQMCPToolsetOptions } from './integrations/google_adk_mcp_toolset';
+
 export const VERSION = '0.3.0';
 export const AUTHOR = 'ArmorIQ Team';
 export const EMAIL = 'license@armoriq.io';
