@@ -404,8 +404,8 @@ export class ArmorIQClient {
     // Lazy require to avoid making js-yaml a hard dependency for callers
     // that never use the YAML loader.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { loadArmorIQConfig, resolveEnvReferences } =
-      require('./config') as typeof import('./config');
+    const cfgModule = require('./config') as typeof import('./config');
+    const { loadArmorIQConfig, resolveEnvReferences } = cfgModule;
     const cfg = resolveEnvReferences(loadArmorIQConfig(filePath));
 
     const proxyEndpoints: Record<string, string> = {};
