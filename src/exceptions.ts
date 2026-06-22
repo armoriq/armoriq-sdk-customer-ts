@@ -122,6 +122,24 @@ export class DelegationException extends ArmorIQException {
 }
 
 /**
+ * Raised when an intent token has been revoked by the IAP backend and the
+ * proxy refused to execute the action. The proxy returns 401 with header
+ * X-Armoriq-Revoked: true. Catch this to refresh the token and retry.
+ */
+export class RevokedTokenError extends ArmorIQException {
+  public tokenId?: string;
+  public reason?: string;
+
+  constructor(message: string, tokenId?: string, reason?: string) {
+    super(message);
+    this.name = 'RevokedTokenError';
+    this.tokenId = tokenId;
+    this.reason = reason;
+    Object.setPrototypeOf(this, RevokedTokenError.prototype);
+  }
+}
+
+/**
  * Raised when a policy enforcement blocks the action.
  */
 export class PolicyBlockedException extends ArmorIQException {

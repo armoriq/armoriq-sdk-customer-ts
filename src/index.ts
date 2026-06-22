@@ -29,6 +29,7 @@ export {
   MCPInvocationException,
   TokenExpiredException,
   DelegationException,
+  RevokedTokenError,
   ConfigurationException,
   PolicyBlockedException,
   PolicyHoldException,
