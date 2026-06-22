@@ -48,13 +48,18 @@ export function summarizeTranscriptUsage(transcriptPath: string): TokenUsageEntr
     } catch {
       continue;
     }
-    const msg = obj?.message;
-    const usage = msg?.usage;
-    const model: string = typeof msg?.model === 'string' ? msg.model : '';
+    // Tolerate both Anthropic (Claude Code) and OpenAI (Codex CLI) shapes, and
+    // common nestings (top-level, message.*, payload.*).
+    const msg = obj?.message ?? obj?.payload ?? obj;
+    const usage = msg?.usage ?? obj?.usage;
+    const model: string =
+      typeof msg?.model === 'string' ? msg.model : typeof obj?.model === 'string' ? obj.model : '';
     if (!usage || !model || model === '<synthetic>') continue;
-    const inTok = Number(usage.input_tokens) || 0;
-    const outTok = Number(usage.output_tokens) || 0;
-    const cacheRead = Number(usage.cache_read_input_tokens) || 0;
+    // Anthropic: input_tokens/output_tokens; OpenAI: prompt_tokens/completion_tokens.
+    const inTok = Number(usage.input_tokens ?? usage.prompt_tokens) || 0;
+    const outTok = Number(usage.output_tokens ?? usage.completion_tokens) || 0;
+    const cacheRead =
+      Number(usage.cache_read_input_tokens ?? usage.prompt_tokens_details?.cached_tokens) || 0;
     const cacheWrite = Number(usage.cache_creation_input_tokens) || 0;
     if (inTok + outTok + cacheRead + cacheWrite === 0) continue;
     const acc =
