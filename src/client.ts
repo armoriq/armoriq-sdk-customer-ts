@@ -4,6 +4,7 @@
 
 import axios, { AxiosInstance } from 'axios';
 import * as crypto from 'crypto';
+import { verifyIntentTokenSignature } from './crypto_verify';
 import {
   IntentToken,
   PlanCapture,
@@ -238,8 +239,7 @@ export class ArmorIQClient {
       `ArmorIQ SDK initialized: mode=${mode}, ` +
         `user=${this.userId}, agent=${this.agentId}, ` +
         `iap=${this.iapEndpoint}, proxy=${this.defaultProxyEndpoint}, ` +
-        `backend=${this.backendEndpoint}, ` +
-        `api_key=${'***' + this.apiKey.slice(-8)}`
+        `backend=${this.backendEndpoint}`
     );
 
     // Validate API key on initialization.
@@ -535,9 +535,9 @@ export class ArmorIQClient {
         timeout: 5000,
       });
 
-      if (response.status === 401) {
+      if (response.status === 401 || response.status === 403) {
         throw new ConfigurationException(
-          'Invalid API key. Please check your API key at https://platform.armoriq.ai/dashboard/api-keys'
+          'Invalid or revoked API key. Please check your API key at https://platform.armoriq.ai/dashboard/api-keys'
         );
       } else if (response.status >= 400) {
         console.warn(`API key validation returned status ${response.status}, but continuing...`);
@@ -1112,10 +1112,15 @@ export class ArmorIQClient {
       payload.subtask = subtask;
     }
 
+    // NOTE: delegate() is legacy. Prefer delegateSubtree() for subtree-bounded
+    // delegation. The /delegation/create route was removed; the live delegation
+    // endpoint is /iap/trust/delegate on the backend.
     try {
-      const response = await this.httpClient.post(`${this.iapEndpoint}/delegation/create`, payload, {
-        timeout: 10000,
-      });
+      const response = await this.httpClient.post(
+        `${this.backendEndpoint}/iap/trust/delegate`,
+        payload,
+        { timeout: 10000 },
+      );
 
       if (response.status >= 400) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -1335,7 +1340,10 @@ export class ArmorIQClient {
   }
 
   /**
-   * Verify an intent token with IAP.
+   * Verify an intent token: checks expiry AND cryptographically verifies the
+   * Ed25519 signature over the canonical signed payload (which binds planHash).
+   * Any tampering with the signed fields - including planHash - makes this
+   * return false. Fails closed on missing material or any error.
    */
   async verifyToken(intentToken: IntentToken): Promise<boolean> {
     try {
@@ -1344,14 +1352,26 @@ export class ArmorIQClient {
         return false;
       }
 
-      if (!intentToken.signature || !intentToken.planHash) {
-        console.warn(`Token ${intentToken.tokenId} missing required fields`);
+      const tokenData: Record<string, any> =
+        (intentToken.rawToken && (intentToken.rawToken as any).token) || {};
+      const signedPlanHash: string | undefined = tokenData.plan_hash;
+
+      if (!tokenData.public_key || !tokenData.signature || !signedPlanHash) {
+        console.warn(`Token ${intentToken.tokenId} missing signature material; cannot verify`);
         return false;
       }
 
-      console.log(
-        `Token ${intentToken.tokenId} is valid (expires in ${IntentToken.timeUntilExpiry(intentToken).toFixed(1)}s)`
-      );
+      if (!verifyIntentTokenSignature(intentToken.rawToken)) {
+        console.warn(`Token ${intentToken.tokenId} signature verification FAILED`);
+        return false;
+      }
+
+      // The planHash the caller relies on must be the one that was signed.
+      if (intentToken.planHash && intentToken.planHash !== signedPlanHash) {
+        console.warn(`Token ${intentToken.tokenId} planHash does not match signed payload`);
+        return false;
+      }
+
       return true;
     } catch (error: any) {
       console.error(`Token verification failed: ${error.message}`);
