@@ -10,6 +10,7 @@
  */
 
 import * as crypto from 'crypto';
+import { canonicalJson } from './crypto_verify';
 import { ToolCall } from './models';
 
 export type ToolNameParser = (toolName: string) => { mcp: string; action: string };
@@ -86,8 +87,9 @@ export function buildPlanFromToolCalls(
  * Stable hash over a tool-calls list — used by ArmorIQSession to skip
  * re-minting when the LLM re-emits the same plan in the same turn.
  *
- * Uses JSON.stringify with no key sorting, matching the Python side's
- * json.dumps(separators=(",",":")), so TS and PY produce matching digests.
+ * Uses the shared canonical JSON (recursively sorted keys, compact, ensure_ascii)
+ * so key ordering can't change the digest, and so TS and Python
+ * (json.dumps(sort_keys=True, separators=(",",":"))) produce matching digests.
  */
 export function hashToolCalls(
   toolCalls: Array<ToolCall | { name: string; args?: Record<string, unknown> }>,
@@ -96,6 +98,6 @@ export function hashToolCalls(
     name: asToolCall(tc).name,
     args: asToolCall(tc).args ?? {},
   }));
-  const canonical = JSON.stringify(canonicalList);
+  const canonical = canonicalJson(canonicalList);
   return crypto.createHash('sha256').update(canonical, 'utf8').digest('hex');
 }

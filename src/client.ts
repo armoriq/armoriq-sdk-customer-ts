@@ -4,6 +4,7 @@
 
 import axios, { AxiosInstance } from 'axios';
 import * as crypto from 'crypto';
+import * as https from 'https';
 import { verifyIntentTokenSignature } from './crypto_verify';
 import {
   IntentToken,
@@ -239,6 +240,8 @@ export class ArmorIQClient {
       timeout: this.timeout,
       headers,
       validateStatus: () => true, // Handle all status codes manually
+      // Honor verifySsl: only relaxes TLS verification when explicitly disabled.
+      httpsAgent: new https.Agent({ rejectUnauthorized: this.verifySsl }),
     });
 
     this.tokenCache = new Map();
@@ -797,8 +800,13 @@ export class ArmorIQClient {
         planHash: data.plan_hash || '',
         planId: data.plan_id,
         signature: typeof tokenData === 'object' ? tokenData.signature || '' : '',
-        issuedAt: Date.now() / 1000,
-        expiresAt: Date.now() / 1000 + validitySeconds,
+        // Prefer the server-signed timestamps so expiry doesn't depend on the
+        // client's clock at mint time (falls back to local only if absent).
+        issuedAt:
+          (typeof tokenData === 'object' && tokenData.issued_at) || Date.now() / 1000,
+        expiresAt:
+          (typeof tokenData === 'object' && tokenData.expires_at) ||
+          Date.now() / 1000 + validitySeconds,
         policy: policy || {},
         compositeIdentity: data.composite_identity || '',
         clientInfo: data.client_info,
@@ -950,28 +958,33 @@ export class ArmorIQClient {
       );
     }
 
-    // Use Merkle proof from CSRG-IAP
+    // Use Merkle proof from CSRG-IAP. Fail closed: refuse to invoke without an
+    // inclusion proof rather than sending an unproven request and relying on the
+    // proxy to reject it.
     if (!merkleProof) {
       if (intentToken.stepProofs && intentToken.stepProofs.length > stepIndex) {
         merkleProof = intentToken.stepProofs[stepIndex] as any;
         console.log(`Using Merkle proof from CSRG-IAP for step ${stepIndex}`);
       } else {
-        console.warn(
-          `No Merkle proof available for step ${stepIndex}. ` +
-            `step_proofs length: ${intentToken.stepProofs?.length || 0}`
+        throw new MCPInvocationException(
+          `No CSRG Merkle proof available for step ${stepIndex} ` +
+            `(step_proofs length: ${intentToken.stepProofs?.length || 0}). ` +
+            `Refusing to invoke without an inclusion proof (fail-closed).`,
         );
       }
     }
 
-    // Add CSRG proof to headers
-    if (merkleProof) {
-      headers['X-CSRG-Proof'] = JSON.stringify(merkleProof);
-    }
+    headers['X-CSRG-Proof'] = JSON.stringify(merkleProof);
 
     const csrgPath = `/steps/[${stepIndex}]/action`;
     headers['X-CSRG-Path'] = csrgPath;
 
-    // Calculate value digest
+    // Value digest is the hash of the value AT the declared path
+    // (/steps/[i]/action) — i.e. the action, matching the CSRG leaf the proxy
+    // verifies the inclusion proof against. NOTE (#92): this binds the action
+    // but NOT the call params; binding params requires the CSRG-IAP Merkle leaf
+    // granularity to include args and the proxy to verify it — a cross-component
+    // change, not a safe SDK-only edit.
     const stepObj = steps[stepIndex] || {};
     const leafValue = typeof stepObj === 'object' ? stepObj.action || action : action;
     const valueStr = JSON.stringify(leafValue);
@@ -1559,9 +1572,18 @@ export class ArmorIQClient {
           limit: response.data.limit ?? 0,
         };
       }
+      console.warn(
+        `resolveUserRole: backend returned ${response.status}; ` +
+          `defaulting to least-privileged role (agent_user, limit 0).`,
+      );
     } catch (e) {
-      // Fallback below
+      console.warn(
+        `resolveUserRole failed (${(e as Error).message}); ` +
+          `defaulting to least-privileged role (agent_user, limit 0).`,
+      );
     }
+    // Fail closed: least-privileged role + zero limit. The backend is the
+    // authority on delegation; never assume elevated role on resolution failure.
     return { role: 'agent_user', limit: 0 };
   }
 
