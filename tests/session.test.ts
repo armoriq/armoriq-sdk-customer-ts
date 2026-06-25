@@ -1,6 +1,27 @@
+import * as crypto from 'crypto';
 import { ArmorIQClient } from '../src/client';
 import { ArmorIQSession } from '../src/session';
 import { IntentToken } from '../src/models';
+import { canonicalJson } from '../src/crypto_verify';
+
+// enforceLocal requires a cryptographically authentic token, so fixtures sign
+// a real csrg token dict with an ephemeral Ed25519 key (mirrors the IAP signer).
+const { privateKey: TEST_SK, publicKey: TEST_PK } = crypto.generateKeyPairSync('ed25519');
+const TEST_PUB_HEX = TEST_PK.export({ type: 'spki', format: 'der' }).subarray(-32).toString('hex');
+
+function signTokenDict(): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    plan_hash: 'h',
+    issued_at: 1700000000,
+    expires_at: 1700003600,
+    policy: {},
+    identity: 'c',
+    public_key: TEST_PUB_HEX,
+    version: '1.0',
+  };
+  const sig = crypto.sign(null, Buffer.from(canonicalJson(payload), 'utf8'), TEST_SK);
+  return { ...payload, signature: sig.toString('hex') };
+}
 
 // Sessions reach into client._sessionInternals() for HTTP work, but several
 // methods (enforceLocal, hashing, plan capture, reset) are pure and don't
@@ -26,7 +47,7 @@ function tokenWithPolicy(policyValidation?: any, policySnapshot?: any[]): Intent
     compositeIdentity: 'c',
     stepProofs: [],
     totalSteps: 0,
-    rawToken: {},
+    rawToken: { token: signTokenDict() },
     policyValidation,
     policySnapshot,
   };

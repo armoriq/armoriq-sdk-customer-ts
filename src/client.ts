@@ -4,6 +4,8 @@
 
 import axios, { AxiosInstance } from 'axios';
 import * as crypto from 'crypto';
+import * as https from 'https';
+import { verifyIntentTokenSignature } from './crypto_verify';
 import {
   IntentToken,
   PlanCapture,
@@ -22,6 +24,7 @@ import {
   PapRefineRequest,
   PapRefineResult,
 } from './models';
+import { RecordTokenUsagePayload, summarizeTranscriptUsage } from './token_usage';
 import {
   InvalidTokenException,
   IntentMismatchException,
@@ -139,21 +142,27 @@ export class ArmorIQClient {
       options.iapEndpoint ||
       process.env.IAP_ENDPOINT ||
       (isArmorClaw
-        ? (isLocal ? ArmorIQClient.LOCAL_ARMORCLAW_IAP_ENDPOINT : ArmorIQClient.ARMORCLAW_IAP_ENDPOINT)
+        ? isLocal
+          ? ArmorIQClient.LOCAL_ARMORCLAW_IAP_ENDPOINT
+          : ArmorIQClient.ARMORCLAW_IAP_ENDPOINT
         : resolveEndpoint('iap'));
 
     this.defaultProxyEndpoint =
       options.proxyEndpoint ||
       process.env.PROXY_ENDPOINT ||
       (isArmorClaw
-        ? (isLocal ? ArmorIQClient.LOCAL_ARMORCLAW_PROXY_ENDPOINT : ArmorIQClient.ARMORCLAW_PROXY_ENDPOINT)
+        ? isLocal
+          ? ArmorIQClient.LOCAL_ARMORCLAW_PROXY_ENDPOINT
+          : ArmorIQClient.ARMORCLAW_PROXY_ENDPOINT
         : resolveEndpoint('proxy'));
 
     this.backendEndpoint =
       options.backendEndpoint ||
       process.env.BACKEND_ENDPOINT ||
       (isArmorClaw
-        ? (isLocal ? ArmorIQClient.LOCAL_ARMORCLAW_BACKEND_ENDPOINT : ArmorIQClient.ARMORCLAW_BACKEND_ENDPOINT)
+        ? isLocal
+          ? ArmorIQClient.LOCAL_ARMORCLAW_BACKEND_ENDPOINT
+          : ArmorIQClient.ARMORCLAW_BACKEND_ENDPOINT
         : resolveEndpoint('backend'));
 
     // Load user/agent identifiers
@@ -196,7 +205,11 @@ export class ArmorIQClient {
     }
 
     // Validate API key format
-    if (!this.apiKey.startsWith('ak_live_') && !this.apiKey.startsWith('ak_test_') && !this.apiKey.startsWith('ak_claw_')) {
+    if (
+      !this.apiKey.startsWith('ak_live_') &&
+      !this.apiKey.startsWith('ak_test_') &&
+      !this.apiKey.startsWith('ak_claw_')
+    ) {
       throw new ConfigurationException(
         "Invalid API key format. API keys must start with 'ak_live_', 'ak_claw_', or 'ak_test_'. " +
           'Get your API key from https://platform.armoriq.ai/dashboard/api-keys'
@@ -227,6 +240,8 @@ export class ArmorIQClient {
       timeout: this.timeout,
       headers,
       validateStatus: () => true, // Handle all status codes manually
+      // Honor verifySsl: only relaxes TLS verification when explicitly disabled.
+      httpsAgent: new https.Agent({ rejectUnauthorized: this.verifySsl }),
     });
 
     this.tokenCache = new Map();
@@ -238,8 +253,7 @@ export class ArmorIQClient {
       `ArmorIQ SDK initialized: mode=${mode}, ` +
         `user=${this.userId}, agent=${this.agentId}, ` +
         `iap=${this.iapEndpoint}, proxy=${this.defaultProxyEndpoint}, ` +
-        `backend=${this.backendEndpoint}, ` +
-        `api_key=${'***' + this.apiKey.slice(-8)}`
+        `backend=${this.backendEndpoint}`
     );
 
     // Validate API key on initialization.
@@ -309,11 +323,11 @@ export class ArmorIQClient {
     const resp = await this.httpClient.post(
       `${this.backendEndpoint}/iap/sdk/bootstrap`,
       {},
-      { headers: { 'X-API-Key': this.apiKey, 'Content-Type': 'application/json' } },
+      { headers: { 'X-API-Key': this.apiKey, 'Content-Type': 'application/json' } }
     );
     if (resp.status >= 400) {
       throw new ConfigurationException(
-        `sdk/bootstrap failed: ${resp.status} ${typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data)}`,
+        `sdk/bootstrap failed: ${resp.status} ${typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data)}`
       );
     }
     this.bootstrapCache = resp.data;
@@ -337,11 +351,11 @@ export class ArmorIQClient {
     const resp = await this.httpClient.post(
       `${this.backendEndpoint}/iap/sdk/resolve-user`,
       { userEmail: key },
-      { headers: { 'X-API-Key': this.apiKey, 'Content-Type': 'application/json' } },
+      { headers: { 'X-API-Key': this.apiKey, 'Content-Type': 'application/json' } }
     );
     if (resp.status >= 400) {
       throw new ConfigurationException(
-        `sdk/resolve-user failed for ${key}: ${resp.status} ${typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data)}`,
+        `sdk/resolve-user failed for ${key}: ${resp.status} ${typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data)}`
       );
     }
     this.userCache.set(key, {
@@ -353,6 +367,56 @@ export class ArmorIQClient {
 
   invalidateUser(userEmail: string): void {
     this.userCache.delete(userEmail.trim().toLowerCase());
+  }
+
+  // ─── Token usage ─────────────────────────────────────────────────
+  // Single cross-tool path for reporting per-session LLM token usage to the
+  // dashboard. The backend upserts by (org, product, session, model), so
+  // re-posting a session's running totals is idempotent. Best-effort: never
+  // throws — returns { ok } so callers can fire-and-forget at session end.
+
+  async recordTokenUsage(
+    payload: RecordTokenUsagePayload
+  ): Promise<{ ok: boolean; status?: number; recorded?: number; reason?: string }> {
+    const entries = Array.isArray(payload.entries) ? payload.entries : [];
+    if (!entries.length) return { ok: true, recorded: 0 };
+    try {
+      const response = await this._retryPost(
+        `${this.backendEndpoint}/dashboard/token-usage`,
+        {
+          product: payload.product,
+          sessionId: payload.sessionId,
+          entries,
+        },
+        { headers: { 'X-API-Key': this.apiKey } }
+      );
+      return {
+        ok: response.status < 400,
+        status: response.status,
+        recorded: response.data?.recorded,
+      };
+    } catch (e: any) {
+      return { ok: false, reason: String(e?.message ?? e) };
+    }
+  }
+
+  /**
+   * Convenience: parse a JSONL transcript and post its token usage in one call.
+   * Use from a tool's session-end hook. Returns the parsed entry count.
+   */
+  async captureTranscriptTokens(opts: {
+    transcriptPath: string;
+    product: string;
+    sessionId: string;
+  }): Promise<{ ok: boolean; recorded: number; reason?: string }> {
+    const entries = summarizeTranscriptUsage(opts.transcriptPath);
+    if (!entries.length) return { ok: true, recorded: 0 };
+    const res = await this.recordTokenUsage({
+      product: opts.product,
+      sessionId: opts.sessionId,
+      entries,
+    });
+    return { ok: res.ok, recorded: entries.length, reason: res.reason };
   }
 
   forUser(userEmail: string): ArmorIQUserScope {
@@ -375,8 +439,8 @@ export class ArmorIQClient {
     // Lazy require to avoid making js-yaml a hard dependency for callers
     // that never use the YAML loader.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { loadArmorIQConfig, resolveEnvReferences } =
-      require('./config') as typeof import('./config');
+    const cfgModule = require('./config') as typeof import('./config');
+    const { loadArmorIQConfig, resolveEnvReferences } = cfgModule;
     const cfg = resolveEnvReferences(loadArmorIQConfig(filePath));
 
     const proxyEndpoints: Record<string, string> = {};
@@ -403,9 +467,7 @@ export class ArmorIQClient {
     });
   }
 
-  static resolveMcpCredentials(
-    fromOptions?: McpCredentialMap,
-  ): McpCredentialMap {
+  static resolveMcpCredentials(fromOptions?: McpCredentialMap): McpCredentialMap {
     const merged: McpCredentialMap = {};
 
     const jsonRaw = process.env.ARMORIQ_MCP_CREDENTIALS;
@@ -436,7 +498,10 @@ export class ArmorIQClient {
       } else if (authType === 'api_key') {
         const apiKey = process.env[`ARMORIQ_MCP_${safe}_API_KEY`];
         const headerName = process.env[`ARMORIQ_MCP_${safe}_HEADER_NAME`];
-        if (apiKey) cred = headerName ? { authType: 'api_key', apiKey, headerName } : { authType: 'api_key', apiKey };
+        if (apiKey)
+          cred = headerName
+            ? { authType: 'api_key', apiKey, headerName }
+            : { authType: 'api_key', apiKey };
       } else if (authType === 'basic') {
         const username = process.env[`ARMORIQ_MCP_${safe}_USERNAME`];
         const password = process.env[`ARMORIQ_MCP_${safe}_PASSWORD`];
@@ -489,7 +554,7 @@ export class ArmorIQClient {
       headers?: Record<string, string>;
       timeout?: number;
       idempotencyKey?: string;
-    } = {},
+    } = {}
   ): Promise<import('axios').AxiosResponse> {
     const merged: Record<string, string> = { ...(options.headers ?? {}) };
     if (options.idempotencyKey && !merged['Idempotency-Key']) {
@@ -510,7 +575,12 @@ export class ArmorIQClient {
         // axios throws on network errors when validateStatus doesn't catch them;
         // ECONNREFUSED / ETIMEDOUT / socket-hangup all surface as Error here.
         const code = e?.code;
-        if (code === 'ECONNREFUSED' || code === 'ETIMEDOUT' || code === 'ECONNRESET' || !e?.response) {
+        if (
+          code === 'ECONNREFUSED' ||
+          code === 'ETIMEDOUT' ||
+          code === 'ECONNRESET' ||
+          !e?.response
+        ) {
           lastErr = e;
         } else {
           throw e;
@@ -535,9 +605,9 @@ export class ArmorIQClient {
         timeout: 5000,
       });
 
-      if (response.status === 401) {
+      if (response.status === 401 || response.status === 403) {
         throw new ConfigurationException(
-          'Invalid API key. Please check your API key at https://platform.armoriq.ai/dashboard/api-keys'
+          'Invalid or revoked API key. Please check your API key at https://platform.armoriq.ai/dashboard/api-keys'
         );
       } else if (response.status >= 400) {
         console.warn(`API key validation returned status ${response.status}, but continuing...`);
@@ -625,23 +695,8 @@ export class ArmorIQClient {
       authority_snapshot: req.authoritySnapshot,
     };
 
-    const failMode: 'open' | 'closed' =
-      (this as any).papFailMode ?? 'closed';
-
-    const buildOpenFallback = (msg: string): PapRefineResult => {
-      console.warn(
-        `[armoriq] pap refine() unreachable (${msg}); fail-open — accepting plan`
-      );
-      return {
-        decision: 'accepted',
-        intentId: null,
-        violations: [],
-        offendingInterfaces: [],
-        predicateFails: [],
-        meta: { fail_open: true, error: msg },
-      };
-    };
-
+    // PAP refine always fails CLOSED: a transport error, non-2xx, or malformed
+    // response raises - it never silently accepts a plan.
     let response: any;
     try {
       response = await this.httpClient.post(
@@ -653,16 +708,11 @@ export class ArmorIQClient {
             'X-API-Key': this.apiKey,
           },
           timeout: 30000,
-          // Accept any status so we can branch on it explicitly below.
-          // Default axios behavior throws on 4xx/5xx — that lumps network
-          // outages and HTTP errors together, which the caller can't
-          // distinguish without inspecting the error shape.
           validateStatus: () => true,
         }
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (failMode === 'open') return buildOpenFallback(msg);
       throw new ArmorIQError(`pap refine() transport error (fail-closed): ${msg}`);
     }
 
@@ -671,20 +721,12 @@ export class ArmorIQClient {
 
     if (status < 200 || status >= 300) {
       const detail =
-        (data && (data.detail || data.message || data.error)) ||
-        `HTTP ${status}`;
-      const msg = `HTTP ${status}: ${detail}`;
-      if (failMode === 'open' && status >= 500) {
-        // Only treat 5xx as fail-open material; 4xx is the caller's fault
-        // and silently accepting it would mask real client errors.
-        return buildOpenFallback(msg);
-      }
-      throw new ArmorIQError(`pap refine() failed (fail-closed): ${msg}`);
+        (data && (data.detail || data.message || data.error)) || `HTTP ${status}`;
+      throw new ArmorIQError(`pap refine() failed (fail-closed): HTTP ${status}: ${detail}`);
     }
 
     if (!data || typeof data !== 'object' || !data.decision) {
       const msg = `malformed response from pap-gateway: ${JSON.stringify(data).slice(0, 200)}`;
-      if (failMode === 'open') return buildOpenFallback(msg);
       throw new ArmorIQError(`pap refine() got malformed response (fail-closed): ${msg}`);
     }
 
@@ -736,7 +778,9 @@ export class ArmorIQClient {
 
       const data = response.data;
       if (!data.success) {
-        throw new InvalidTokenException(`Token issuance failed: ${data.message || 'Unknown error'}`);
+        throw new InvalidTokenException(
+          `Token issuance failed: ${data.message || 'Unknown error'}`
+        );
       }
 
       const tokenData = data.token || {};
@@ -756,8 +800,13 @@ export class ArmorIQClient {
         planHash: data.plan_hash || '',
         planId: data.plan_id,
         signature: typeof tokenData === 'object' ? tokenData.signature || '' : '',
-        issuedAt: Date.now() / 1000,
-        expiresAt: Date.now() / 1000 + validitySeconds,
+        // Prefer the server-signed timestamps so expiry doesn't depend on the
+        // client's clock at mint time (falls back to local only if absent).
+        issuedAt:
+          (typeof tokenData === 'object' && tokenData.issued_at) || Date.now() / 1000,
+        expiresAt:
+          (typeof tokenData === 'object' && tokenData.expires_at) ||
+          Date.now() / 1000 + validitySeconds,
         policy: policy || {},
         compositeIdentity: data.composite_identity || '',
         clientInfo: data.client_info,
@@ -778,7 +827,10 @@ export class ArmorIQClient {
       const responseData = error?.response?.data;
       const deniedTools = responseData?.policy_validation?.denied_tools;
       const deniedReasons = responseData?.policy_validation?.denied_reasons;
-      if (error?.response?.status === 403 || (Array.isArray(deniedTools) && deniedTools.length > 0)) {
+      if (
+        error?.response?.status === 403 ||
+        (Array.isArray(deniedTools) && deniedTools.length > 0)
+      ) {
         const reason =
           (Array.isArray(deniedReasons) && deniedReasons.length > 0
             ? deniedReasons.join('; ')
@@ -787,7 +839,7 @@ export class ArmorIQClient {
           `Policy blocked intent token issuance: ${reason}`,
           responseData?.policy_validation?.default_enforcement_action,
           reason,
-          responseData?.policy_validation,
+          responseData?.policy_validation
         );
       }
       if (error instanceof InvalidTokenException) {
@@ -906,28 +958,33 @@ export class ArmorIQClient {
       );
     }
 
-    // Use Merkle proof from CSRG-IAP
+    // Use Merkle proof from CSRG-IAP. Fail closed: refuse to invoke without an
+    // inclusion proof rather than sending an unproven request and relying on the
+    // proxy to reject it.
     if (!merkleProof) {
       if (intentToken.stepProofs && intentToken.stepProofs.length > stepIndex) {
         merkleProof = intentToken.stepProofs[stepIndex] as any;
         console.log(`Using Merkle proof from CSRG-IAP for step ${stepIndex}`);
       } else {
-        console.warn(
-          `No Merkle proof available for step ${stepIndex}. ` +
-            `step_proofs length: ${intentToken.stepProofs?.length || 0}`
+        throw new MCPInvocationException(
+          `No CSRG Merkle proof available for step ${stepIndex} ` +
+            `(step_proofs length: ${intentToken.stepProofs?.length || 0}). ` +
+            `Refusing to invoke without an inclusion proof (fail-closed).`,
         );
       }
     }
 
-    // Add CSRG proof to headers
-    if (merkleProof) {
-      headers['X-CSRG-Proof'] = JSON.stringify(merkleProof);
-    }
+    headers['X-CSRG-Proof'] = JSON.stringify(merkleProof);
 
     const csrgPath = `/steps/[${stepIndex}]/action`;
     headers['X-CSRG-Path'] = csrgPath;
 
-    // Calculate value digest
+    // Value digest is the hash of the value AT the declared path
+    // (/steps/[i]/action) — i.e. the action, matching the CSRG leaf the proxy
+    // verifies the inclusion proof against. NOTE (#92): this binds the action
+    // but NOT the call params; binding params requires the CSRG-IAP Merkle leaf
+    // granularity to include args and the proxy to verify it — a cross-component
+    // change, not a safe SDK-only edit.
     const stepObj = steps[stepIndex] || {};
     const leafValue = typeof stepObj === 'object' ? stepObj.action || action : action;
     const valueStr = JSON.stringify(leafValue);
@@ -967,9 +1024,12 @@ export class ArmorIQClient {
       // Check for enforcement responses (hold/block) BEFORE generic error handling
       if (responseData?.enforcement) {
         const enforcement = responseData.enforcement;
-        const enrichedError: any = new Error(responseData.message || `Enforcement: ${enforcement.action}`);
+        const enrichedError: any = new Error(
+          responseData.message || `Enforcement: ${enforcement.action}`
+        );
         enrichedError.response = { status: response.status, data: responseData };
-        enrichedError.name = enforcement.action === 'block' ? 'PolicyBlockedException' : 'PolicyHoldException';
+        enrichedError.name =
+          enforcement.action === 'block' ? 'PolicyBlockedException' : 'PolicyHoldException';
         throw enrichedError;
       }
 
@@ -1016,9 +1076,7 @@ export class ArmorIQClient {
 
       const resultData = data.result || data;
       const hasToolError =
-        Boolean(resultData?.isError) ||
-        Boolean(resultData?.error) ||
-        Boolean(resultData?.is_error);
+        Boolean(resultData?.isError) || Boolean(resultData?.error) || Boolean(resultData?.is_error);
       const result: MCPInvocationResult = {
         mcp,
         action,
@@ -1052,7 +1110,10 @@ export class ArmorIQClient {
       if (statusCode === 403 && errorDetail?.enforcement) {
         const enrichedError: any = new Error(errorDetail.message || 'Enforcement action');
         enrichedError.response = error.response;
-        enrichedError.name = errorDetail.enforcement.action === 'block' ? 'PolicyBlockedException' : 'PolicyHoldException';
+        enrichedError.name =
+          errorDetail.enforcement.action === 'block'
+            ? 'PolicyBlockedException'
+            : 'PolicyHoldException';
         throw enrichedError;
       }
 
@@ -1112,10 +1173,15 @@ export class ArmorIQClient {
       payload.subtask = subtask;
     }
 
+    // NOTE: delegate() is legacy. Prefer delegateSubtree() for subtree-bounded
+    // delegation. The /delegation/create route was removed; the live delegation
+    // endpoint is /iap/trust/delegate on the backend.
     try {
-      const response = await this.httpClient.post(`${this.iapEndpoint}/delegation/create`, payload, {
-        timeout: 10000,
-      });
+      const response = await this.httpClient.post(
+        `${this.backendEndpoint}/iap/trust/delegate`,
+        payload,
+        { timeout: 10000 },
+      );
 
       if (response.status >= 400) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -1335,7 +1401,10 @@ export class ArmorIQClient {
   }
 
   /**
-   * Verify an intent token with IAP.
+   * Verify an intent token: checks expiry AND cryptographically verifies the
+   * Ed25519 signature over the canonical signed payload (which binds planHash).
+   * Any tampering with the signed fields - including planHash - makes this
+   * return false. Fails closed on missing material or any error.
    */
   async verifyToken(intentToken: IntentToken): Promise<boolean> {
     try {
@@ -1344,14 +1413,26 @@ export class ArmorIQClient {
         return false;
       }
 
-      if (!intentToken.signature || !intentToken.planHash) {
-        console.warn(`Token ${intentToken.tokenId} missing required fields`);
+      const tokenData: Record<string, any> =
+        (intentToken.rawToken && (intentToken.rawToken as any).token) || {};
+      const signedPlanHash: string | undefined = tokenData.plan_hash;
+
+      if (!tokenData.public_key || !tokenData.signature || !signedPlanHash) {
+        console.warn(`Token ${intentToken.tokenId} missing signature material; cannot verify`);
         return false;
       }
 
-      console.log(
-        `Token ${intentToken.tokenId} is valid (expires in ${IntentToken.timeUntilExpiry(intentToken).toFixed(1)}s)`
-      );
+      if (!verifyIntentTokenSignature(intentToken.rawToken)) {
+        console.warn(`Token ${intentToken.tokenId} signature verification FAILED`);
+        return false;
+      }
+
+      // The planHash the caller relies on must be the one that was signed.
+      if (intentToken.planHash && intentToken.planHash !== signedPlanHash) {
+        console.warn(`Token ${intentToken.tokenId} planHash does not match signed payload`);
+        return false;
+      }
+
       return true;
     } catch (error: any) {
       console.error(`Token verification failed: ${error.message}`);
@@ -1371,7 +1452,7 @@ export class ArmorIQClient {
     try {
       const response = await this.httpClient.get(
         `${this.backendEndpoint}/mcp/tool-metadata/${encodeURIComponent(mcpName)}`,
-        { headers: { 'X-API-Key': this.apiKey } },
+        { headers: { 'X-API-Key': this.apiKey } }
       );
 
       if (response.status >= 400) {
@@ -1404,13 +1485,12 @@ export class ArmorIQClient {
    * List all MCPs registered for this org (resolved via API key).
    */
   async listMcps(): Promise<Array<{ mcpId: string; name: string; url: string }>> {
-    const response = await this.httpClient.get(
-      `${this.backendEndpoint}/mcp/my-servers`,
-      { headers: { 'X-API-Key': this.apiKey } },
-    );
+    const response = await this.httpClient.get(`${this.backendEndpoint}/mcp/my-servers`, {
+      headers: { 'X-API-Key': this.apiKey },
+    });
     if (response.status >= 400) {
       throw new MCPInvocationException(
-        `listMcps failed: ${response.status} ${JSON.stringify(response.data)}`,
+        `listMcps failed: ${response.status} ${JSON.stringify(response.data)}`
       );
     }
     return response.data?.data || [];
@@ -1422,11 +1502,11 @@ export class ArmorIQClient {
   async getMcpToolSchemas(mcpName: string): Promise<any[]> {
     const response = await this.httpClient.get(
       `${this.backendEndpoint}/mcp/tools/${encodeURIComponent(mcpName)}`,
-      { headers: { 'X-API-Key': this.apiKey } },
+      { headers: { 'X-API-Key': this.apiKey } }
     );
     if (response.status >= 400) {
       throw new MCPInvocationException(
-        `getMcpToolSchemas(${mcpName}) failed: ${response.status} ${JSON.stringify(response.data)}`,
+        `getMcpToolSchemas(${mcpName}) failed: ${response.status} ${JSON.stringify(response.data)}`
       );
     }
     return response.data?.data?.tools || [];
@@ -1438,7 +1518,7 @@ export class ArmorIQClient {
   private async enrichPolicyContext(
     mcpName: string,
     toolName: string,
-    params: Record<string, any>,
+    params: Record<string, any>
   ): Promise<PolicyContext> {
     const metadata = await this.fetchToolMetadata(mcpName);
     const toolMeta = metadata.toolMetadata?.[toolName];
@@ -1481,23 +1561,29 @@ export class ArmorIQClient {
    */
   private async resolveUserRole(userEmail: string): Promise<{ role: string; limit: number }> {
     try {
-      const response = await this.httpClient.get(
-        `${this.backendEndpoint}/delegation/my-role`,
-        {
-          params: {},
-          headers: { 'X-API-Key': this.apiKey, 'X-User-Email': userEmail },
-          timeout: 5000,
-        },
-      );
+      const response = await this.httpClient.get(`${this.backendEndpoint}/delegation/my-role`, {
+        params: {},
+        headers: { 'X-API-Key': this.apiKey, 'X-User-Email': userEmail },
+        timeout: 5000,
+      });
       if (response.status < 400 && response.data?.role) {
         return {
           role: response.data.role,
           limit: response.data.limit ?? 0,
         };
       }
+      console.warn(
+        `resolveUserRole: backend returned ${response.status}; ` +
+          `defaulting to least-privileged role (agent_user, limit 0).`,
+      );
     } catch (e) {
-      // Fallback below
+      console.warn(
+        `resolveUserRole failed (${(e as Error).message}); ` +
+          `defaulting to least-privileged role (agent_user, limit 0).`,
+      );
     }
+    // Fail closed: least-privileged role + zero limit. The backend is the
+    // authority on delegation; never assume elevated role on resolution failure.
     return { role: 'agent_user', limit: 0 };
   }
 
@@ -1509,12 +1595,18 @@ export class ArmorIQClient {
     const response = await this.httpClient.post(
       `${this.backendEndpoint}/delegation/request`,
       params,
-      { headers: { 'X-API-Key': this.apiKey, 'X-User-Email': params.requesterEmail, 'Idempotency-Key': idempotencyKey } },
+      {
+        headers: {
+          'X-API-Key': this.apiKey,
+          'X-User-Email': params.requesterEmail,
+          'Idempotency-Key': idempotencyKey,
+        },
+      }
     );
 
     if (response.status >= 400) {
       throw new DelegationException(
-        `Failed to create delegation request: ${response.data?.message || response.statusText}`,
+        `Failed to create delegation request: ${response.data?.message || response.statusText}`
       );
     }
 
@@ -1527,14 +1619,14 @@ export class ArmorIQClient {
   async checkApprovedDelegation(
     userEmail: string,
     tool: string,
-    amount: number,
+    amount: number
   ): Promise<ApprovedDelegation | null> {
     const response = await this.httpClient.get(
       `${this.backendEndpoint}/delegation/check-approved`,
       {
         params: { tool, amount },
         headers: { 'X-API-Key': this.apiKey, 'X-User-Email': userEmail },
-      },
+      }
     );
 
     if (response.status >= 400 || !response.data?.approved) {
@@ -1557,7 +1649,7 @@ export class ArmorIQClient {
       {
         headers: { 'X-API-Key': this.apiKey, 'X-User-Email': userEmail },
         idempotencyKey: `mark-exec:${delegationId}`,
-      },
+      }
     );
   }
 
@@ -1583,7 +1675,7 @@ export class ArmorIQClient {
         {
           headers: { 'X-API-Key': this.apiKey },
           idempotencyKey: `plan-status:${planId}:${status}`,
-        },
+        }
       );
       console.log(`Plan ${planId} status updated to ${status}`);
     } catch (error: any) {
@@ -1599,7 +1691,7 @@ export class ArmorIQClient {
     action: string,
     intentToken: IntentToken,
     params?: Record<string, any>,
-    options?: InvokeOptions,
+    options?: InvokeOptions
   ): Promise<MCPInvocationResult> {
     // Enrich with policy context from semantic metadata
     const policyContext = await this.enrichPolicyContext(mcp, action, params || {});
@@ -1615,7 +1707,7 @@ export class ArmorIQClient {
         intentToken,
         enrichedParams,
         undefined,
-        options?.userEmail,
+        options?.userEmail
       );
     } catch (error: any) {
       // Detect structured enforcement responses
@@ -1630,7 +1722,7 @@ export class ArmorIQClient {
           enforcement.action,
           enforcement.reason,
           enforcement.metadata,
-          normalizeMatchedPolicy(enforcement),
+          normalizeMatchedPolicy(enforcement)
         );
       }
 
@@ -1650,7 +1742,7 @@ export class ArmorIQClient {
             responseData.message || 'Action held for approval',
             responseData.delegation_context,
             enforcement.metadata,
-            normalizeMatchedPolicy(enforcement),
+            normalizeMatchedPolicy(enforcement)
           );
         }
 
@@ -1693,7 +1785,7 @@ export class ArmorIQClient {
             responseData.message || 'Action held for approval (delegation request failed)',
             responseData.delegation_context,
             { ...enforcement.metadata, delegationError: delegationError.message },
-            normalizeMatchedPolicy(enforcement),
+            normalizeMatchedPolicy(enforcement)
           );
         }
 
@@ -1712,7 +1804,7 @@ export class ArmorIQClient {
           const approved = await this.checkApprovedDelegation(
             options.userEmail,
             action,
-            policyContext.amount || 0,
+            policyContext.amount || 0
           );
 
           if (approved) {
@@ -1729,7 +1821,7 @@ export class ArmorIQClient {
               intentToken,
               retryParams,
               undefined,
-              options.userEmail,
+              options.userEmail
             );
 
             await this.markDelegationExecuted(options.userEmail, approved.delegationId);
@@ -1740,7 +1832,7 @@ export class ArmorIQClient {
         throw new DelegationException(
           `Delegation approval timed out after ${timeout / 1000}s`,
           undefined,
-          delegationResult.delegationId,
+          delegationResult.delegationId
         );
       }
 
@@ -1766,7 +1858,10 @@ export class ArmorIQClient {
  */
 export class ArmorIQUserScope {
   public readonly userEmail: string;
-  constructor(private client: ArmorIQClient, userEmail: string) {
+  constructor(
+    private client: ArmorIQClient,
+    userEmail: string
+  ) {
     this.userEmail = userEmail.trim().toLowerCase();
   }
 
