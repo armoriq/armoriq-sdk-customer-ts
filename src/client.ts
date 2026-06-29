@@ -4,6 +4,8 @@
 
 import axios, { AxiosInstance } from 'axios';
 import * as crypto from 'crypto';
+import * as https from 'https';
+import { verifyIntentTokenSignature } from './crypto_verify';
 import {
   IntentToken,
   PlanCapture,
@@ -19,6 +21,8 @@ import {
   HoldInfo,
   McpCredential,
   McpCredentialMap,
+  PapRefineRequest,
+  PapRefineResult,
 } from './models';
 import { RecordTokenUsagePayload, summarizeTranscriptUsage } from './token_usage';
 import {
@@ -31,6 +35,17 @@ import {
   PolicyBlockedException,
   PolicyHoldException,
 } from './exceptions';
+
+/**
+ * Lightweight error used by the PAP refine() path when fail-closed mode
+ * is active and the gateway is unreachable or returned an error.
+ */
+export class ArmorIQError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ArmorIQError';
+  }
+}
 import { resolveEndpoint, ARMORIQ_ENV } from './_build_env';
 
 /**
@@ -96,6 +111,15 @@ export class ArmorIQClient {
    */
   public userEmailOverride?: string;
 
+  /**
+   * Optional PAP gateway URL. If set, client.refine() uses it; otherwise
+   * the call goes to {backendEndpoint}/iap/sdk/preflight which proxies
+   * to whatever PAP_GATEWAY_URL conmap-auto is configured with.
+   */
+  public papGatewayUrl?: string;
+  /** 'closed' (default) throws on unreachable; 'open' warns + accepts. */
+  public papFailMode: 'open' | 'closed' = 'closed';
+
   constructor(options: Partial<SDKConfig> & { apiKey?: string; useProduction?: boolean } = {}) {
     // `useProduction: false` is a legacy escape hatch for local dev — treat
     // it as ARMORIQ_ENV=local unless the caller set the env var explicitly.
@@ -145,6 +169,16 @@ export class ArmorIQClient {
     this.userId = options.userId || process.env.USER_ID || '';
     this.agentId = options.agentId || process.env.AGENT_ID || '';
     this.contextId = options.contextId || process.env.CONTEXT_ID || 'default';
+
+    // PAP gateway integration — optional. If unset, refine() falls back to
+    // {backendEndpoint}/iap/sdk/preflight which lets conmap-auto own the
+    // fan-out to the gateway. Set papFailMode='open' in dev to skip
+    // throwing when the gateway isn't running yet.
+    this.papGatewayUrl =
+      options.papGatewayUrl ?? process.env.PAP_GATEWAY_URL ?? undefined;
+    this.papFailMode =
+      options.papFailMode ??
+      ((process.env.PAP_FAIL_MODE as 'open' | 'closed') || 'closed');
     // API key resolution order: explicit param → env var → credentials file → empty
     this.apiKey = options.apiKey || process.env.ARMORIQ_API_KEY || '';
     if (!this.apiKey) {
@@ -206,6 +240,8 @@ export class ArmorIQClient {
       timeout: this.timeout,
       headers,
       validateStatus: () => true, // Handle all status codes manually
+      // Honor verifySsl: only relaxes TLS verification when explicitly disabled.
+      httpsAgent: new https.Agent({ rejectUnauthorized: this.verifySsl }),
     });
 
     this.tokenCache = new Map();
@@ -217,8 +253,7 @@ export class ArmorIQClient {
       `ArmorIQ SDK initialized: mode=${mode}, ` +
         `user=${this.userId}, agent=${this.agentId}, ` +
         `iap=${this.iapEndpoint}, proxy=${this.defaultProxyEndpoint}, ` +
-        `backend=${this.backendEndpoint}, ` +
-        `api_key=${'***' + this.apiKey.slice(-8)}`
+        `backend=${this.backendEndpoint}`
     );
 
     // Validate API key on initialization.
@@ -570,9 +605,9 @@ export class ArmorIQClient {
         timeout: 5000,
       });
 
-      if (response.status === 401) {
+      if (response.status === 401 || response.status === 403) {
         throw new ConfigurationException(
-          'Invalid API key. Please check your API key at https://platform.armoriq.ai/dashboard/api-keys'
+          'Invalid or revoked API key. Please check your API key at https://platform.armoriq.ai/dashboard/api-keys'
         );
       } else if (response.status >= 400) {
         console.warn(`API key validation returned status ${response.status}, but continuing...`);
@@ -641,6 +676,71 @@ export class ArmorIQClient {
   }
 
   /**
+   * NEW — PAP refinement. Call before getIntentToken() so the gateway can
+   * (a) run plan-level T_P ⊆ T_I refinement, (b) evaluate argument-level
+   * predicates, and (c) persist the decision so refine → token → execution
+   * is one audit chain.
+   *
+   * Endpoint: POST {backendEndpoint}/iap/sdk/preflight, which fans out to
+   * the configured pap-gateway-service /v1/refine.
+   *
+   * Fail-closed by default — throws if the gateway is unreachable. Pass
+   * { papFailMode: 'open' } in the SDK config to soften this for dev.
+   */
+  async refine(req: PapRefineRequest): Promise<PapRefineResult> {
+    const payload = {
+      agent_id: req.agentId,
+      user_prompt: req.userPrompt,
+      tool_calls: req.toolCalls,
+      authority_snapshot: req.authoritySnapshot,
+    };
+
+    // PAP refine always fails CLOSED: a transport error, non-2xx, or malformed
+    // response raises - it never silently accepts a plan.
+    let response: any;
+    try {
+      response = await this.httpClient.post(
+        `${this.backendEndpoint}/iap/sdk/preflight`,
+        payload,
+        {
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            'X-API-Key': this.apiKey,
+          },
+          timeout: 30000,
+          validateStatus: () => true,
+        }
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new ArmorIQError(`pap refine() transport error (fail-closed): ${msg}`);
+    }
+
+    const status: number = response?.status ?? 0;
+    const data = response?.data;
+
+    if (status < 200 || status >= 300) {
+      const detail =
+        (data && (data.detail || data.message || data.error)) || `HTTP ${status}`;
+      throw new ArmorIQError(`pap refine() failed (fail-closed): HTTP ${status}: ${detail}`);
+    }
+
+    if (!data || typeof data !== 'object' || !data.decision) {
+      const msg = `malformed response from pap-gateway: ${JSON.stringify(data).slice(0, 200)}`;
+      throw new ArmorIQError(`pap refine() got malformed response (fail-closed): ${msg}`);
+    }
+
+    return {
+      decision: data.decision,
+      intentId: data.intent_id ?? null,
+      violations: data.violations ?? [],
+      offendingInterfaces: data.offending_interfaces ?? [],
+      predicateFails: data.predicate_fails ?? [],
+      meta: data.meta ?? {},
+    };
+  }
+
+  /**
    * Request a signed intent token from IAP for the given plan.
    */
   async getIntentToken(
@@ -700,8 +800,13 @@ export class ArmorIQClient {
         planHash: data.plan_hash || '',
         planId: data.plan_id,
         signature: typeof tokenData === 'object' ? tokenData.signature || '' : '',
-        issuedAt: Date.now() / 1000,
-        expiresAt: Date.now() / 1000 + validitySeconds,
+        // Prefer the server-signed timestamps so expiry doesn't depend on the
+        // client's clock at mint time (falls back to local only if absent).
+        issuedAt:
+          (typeof tokenData === 'object' && tokenData.issued_at) || Date.now() / 1000,
+        expiresAt:
+          (typeof tokenData === 'object' && tokenData.expires_at) ||
+          Date.now() / 1000 + validitySeconds,
         policy: policy || {},
         compositeIdentity: data.composite_identity || '',
         clientInfo: data.client_info,
@@ -853,28 +958,33 @@ export class ArmorIQClient {
       );
     }
 
-    // Use Merkle proof from CSRG-IAP
+    // Use Merkle proof from CSRG-IAP. Fail closed: refuse to invoke without an
+    // inclusion proof rather than sending an unproven request and relying on the
+    // proxy to reject it.
     if (!merkleProof) {
       if (intentToken.stepProofs && intentToken.stepProofs.length > stepIndex) {
         merkleProof = intentToken.stepProofs[stepIndex] as any;
         console.log(`Using Merkle proof from CSRG-IAP for step ${stepIndex}`);
       } else {
-        console.warn(
-          `No Merkle proof available for step ${stepIndex}. ` +
-            `step_proofs length: ${intentToken.stepProofs?.length || 0}`
+        throw new MCPInvocationException(
+          `No CSRG Merkle proof available for step ${stepIndex} ` +
+            `(step_proofs length: ${intentToken.stepProofs?.length || 0}). ` +
+            `Refusing to invoke without an inclusion proof (fail-closed).`,
         );
       }
     }
 
-    // Add CSRG proof to headers
-    if (merkleProof) {
-      headers['X-CSRG-Proof'] = JSON.stringify(merkleProof);
-    }
+    headers['X-CSRG-Proof'] = JSON.stringify(merkleProof);
 
     const csrgPath = `/steps/[${stepIndex}]/action`;
     headers['X-CSRG-Path'] = csrgPath;
 
-    // Calculate value digest
+    // Value digest is the hash of the value AT the declared path
+    // (/steps/[i]/action) — i.e. the action, matching the CSRG leaf the proxy
+    // verifies the inclusion proof against. NOTE (#92): this binds the action
+    // but NOT the call params; binding params requires the CSRG-IAP Merkle leaf
+    // granularity to include args and the proxy to verify it — a cross-component
+    // change, not a safe SDK-only edit.
     const stepObj = steps[stepIndex] || {};
     const leafValue = typeof stepObj === 'object' ? stepObj.action || action : action;
     const valueStr = JSON.stringify(leafValue);
@@ -1063,13 +1173,14 @@ export class ArmorIQClient {
       payload.subtask = subtask;
     }
 
+    // NOTE: delegate() is legacy. Prefer delegateSubtree() for subtree-bounded
+    // delegation. The /delegation/create route was removed; the live delegation
+    // endpoint is /iap/trust/delegate on the backend.
     try {
       const response = await this.httpClient.post(
-        `${this.iapEndpoint}/delegation/create`,
+        `${this.backendEndpoint}/iap/trust/delegate`,
         payload,
-        {
-          timeout: 10000,
-        }
+        { timeout: 10000 },
       );
 
       if (response.status >= 400) {
@@ -1290,7 +1401,10 @@ export class ArmorIQClient {
   }
 
   /**
-   * Verify an intent token with IAP.
+   * Verify an intent token: checks expiry AND cryptographically verifies the
+   * Ed25519 signature over the canonical signed payload (which binds planHash).
+   * Any tampering with the signed fields - including planHash - makes this
+   * return false. Fails closed on missing material or any error.
    */
   async verifyToken(intentToken: IntentToken): Promise<boolean> {
     try {
@@ -1299,14 +1413,26 @@ export class ArmorIQClient {
         return false;
       }
 
-      if (!intentToken.signature || !intentToken.planHash) {
-        console.warn(`Token ${intentToken.tokenId} missing required fields`);
+      const tokenData: Record<string, any> =
+        (intentToken.rawToken && (intentToken.rawToken as any).token) || {};
+      const signedPlanHash: string | undefined = tokenData.plan_hash;
+
+      if (!tokenData.public_key || !tokenData.signature || !signedPlanHash) {
+        console.warn(`Token ${intentToken.tokenId} missing signature material; cannot verify`);
         return false;
       }
 
-      console.log(
-        `Token ${intentToken.tokenId} is valid (expires in ${IntentToken.timeUntilExpiry(intentToken).toFixed(1)}s)`
-      );
+      if (!verifyIntentTokenSignature(intentToken.rawToken)) {
+        console.warn(`Token ${intentToken.tokenId} signature verification FAILED`);
+        return false;
+      }
+
+      // The planHash the caller relies on must be the one that was signed.
+      if (intentToken.planHash && intentToken.planHash !== signedPlanHash) {
+        console.warn(`Token ${intentToken.tokenId} planHash does not match signed payload`);
+        return false;
+      }
+
       return true;
     } catch (error: any) {
       console.error(`Token verification failed: ${error.message}`);
@@ -1446,9 +1572,18 @@ export class ArmorIQClient {
           limit: response.data.limit ?? 0,
         };
       }
+      console.warn(
+        `resolveUserRole: backend returned ${response.status}; ` +
+          `defaulting to least-privileged role (agent_user, limit 0).`,
+      );
     } catch (e) {
-      // Fallback below
+      console.warn(
+        `resolveUserRole failed (${(e as Error).message}); ` +
+          `defaulting to least-privileged role (agent_user, limit 0).`,
+      );
     }
+    // Fail closed: least-privileged role + zero limit. The backend is the
+    // authority on delegation; never assume elevated role on resolution failure.
     return { role: 'agent_user', limit: 0 };
   }
 

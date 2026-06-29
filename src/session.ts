@@ -15,6 +15,7 @@
  */
 
 import { ArmorIQClient } from './client';
+import { verifyIntentTokenSignature } from './crypto_verify';
 import { IntentToken, ToolCall } from './models';
 import {
   ToolNameParser,
@@ -248,6 +249,12 @@ export class ArmorIQSession {
     if (IntentToken.isExpired(this.currentToken)) {
       return { allowed: false, action: 'block', reason: 'token-expired' };
     }
+    // The local decision is read from the token's policy fields, so the token
+    // must be cryptographically authentic first - otherwise a forged token
+    // could assert an arbitrary allowlist. Fail closed if the signature is bad.
+    if (!verifyIntentTokenSignature(this.currentToken.rawToken)) {
+      return { allowed: false, action: 'block', reason: 'token-signature-invalid' };
+    }
     const { mcp, action } = this.toolNameParser(toolName);
     const inPlan =
       this.declaredTools.has(toolName) ||
@@ -406,7 +413,7 @@ export class ArmorIQSession {
         },
       );
       const data = response.data ?? {};
-      const allowed = data.allowed !== false;
+      const allowed = data.allowed === true;
       const actionDecision: 'allow' | 'block' | 'hold' =
         data.enforcementAction ?? (allowed ? 'allow' : 'block');
       const matched: string | undefined =
@@ -433,8 +440,12 @@ export class ArmorIQSession {
         matchedPolicy: matched,
       };
     } catch (e) {
-      console.warn(`enforceSdk() failed: ${(e as Error).message}. Allowing tool call.`);
-      return { allowed: true, action: 'allow', reason: 'enforce-unavailable' };
+      console.error(`enforceSdk() failed: ${(e as Error).message}. Blocking tool call (fail-closed).`);
+      return {
+        allowed: false,
+        action: 'block',
+        reason: `enforce-unavailable: ${(e as Error).message}`,
+      };
     }
   }
 
@@ -482,23 +493,21 @@ export class ArmorIQSession {
           timeout: 10000,
         },
       );
-      if (response.status === 403) {
-        const data = response.data ?? {};
-        return {
-          allowed: false,
-          action: data.action ?? 'block',
-          reason: data.reason ?? data.message,
-          matchedPolicy:
-            typeof data.matched_policy === 'object'
-              ? data.matched_policy?.name
-              : data.matched_policy,
-        };
-      }
       const data = response.data ?? {};
       const rawPolicy = data.matched_policy ?? data.matchedPolicy;
       const policyName =
         rawPolicy && typeof rawPolicy === 'object' ? rawPolicy.name : rawPolicy;
-      const allowedFlag = data.allowed !== false;
+      // Fail closed: only an explicit allow from a 2xx response permits the call.
+      // Any error status (403 or otherwise) or an ambiguous body blocks.
+      if (response.status >= 400) {
+        return {
+          allowed: false,
+          action: data.action ?? 'block',
+          reason: data.reason ?? data.message ?? `enforce-rejected: HTTP ${response.status}`,
+          matchedPolicy: policyName,
+        };
+      }
+      const allowedFlag = data.allowed === true;
       const actionDecision: 'allow' | 'block' | 'hold' =
         data.enforcementAction ?? data.action ?? (allowedFlag ? 'allow' : 'block');
       return {
@@ -509,8 +518,12 @@ export class ArmorIQSession {
         matchedPolicy: policyName,
       };
     } catch (e) {
-      console.warn(`enforce() failed: ${(e as Error).message}. Allowing tool call.`);
-      return { allowed: true, action: 'allow', reason: 'enforce-unavailable' };
+      console.error(`enforce() failed: ${(e as Error).message}. Blocking tool call (fail-closed).`);
+      return {
+        allowed: false,
+        action: 'block',
+        reason: `enforce-unavailable: ${(e as Error).message}`,
+      };
     }
   }
 
