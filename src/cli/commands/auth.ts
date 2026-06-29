@@ -7,6 +7,7 @@
  * we fall back to polling /auth/device/token.
  */
 
+import * as crypto from 'crypto';
 import * as http from 'http';
 import * as net from 'net';
 import { URL } from 'url';
@@ -171,6 +172,7 @@ interface CallbackResult {
 
 function startCallbackServer(
   port: number,
+  expectedState: string,
   product?: string,
 ): { server: http.Server; once: Promise<CallbackResult> } {
   let resolveResult: (r: CallbackResult) => void;
@@ -181,6 +183,14 @@ function startCallbackServer(
     const url = new URL(req.url ?? '/', `http://localhost:${port}`);
     if (url.pathname === '/callback') {
       const params = Object.fromEntries(url.searchParams.entries());
+      // Reject any callback that doesn't carry the state nonce we generated.
+      // Without this, any local process or web page could hit the loopback
+      // port with ?key=<attacker> during the login window (key fixation).
+      if (!params.state || params.state !== expectedState) {
+        res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Invalid or missing state parameter.');
+        return;
+      }
       const callbackProduct = params.product || product;
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(
@@ -258,8 +268,9 @@ export async function cmdLogin(args: {
   out('');
 
   const port = await findFreePort();
-  const callbackUrl = `http://localhost:${port}/callback`;
-  const { server, once: callbackOnce } = startCallbackServer(port, product);
+  const state = crypto.randomBytes(16).toString('hex');
+  const callbackUrl = `http://localhost:${port}/callback?state=${state}`;
+  const { server, once: callbackOnce } = startCallbackServer(port, state, product);
 
   let dc: any;
   try {
