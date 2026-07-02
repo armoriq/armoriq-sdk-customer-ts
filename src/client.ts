@@ -216,12 +216,11 @@ export class ArmorIQClient {
       );
     }
 
-    if (!this.userId) {
-      throw new ConfigurationException('userId is required (set USER_ID env var)');
-    }
-    if (!this.agentId) {
-      throw new ConfigurationException('agentId is required (set AGENT_ID env var)');
-    }
+    // user_id/agent_id are legacy identifiers. In the forUser(email) pattern
+    // they're resolved per-request from the API key + email on conmap-auto,
+    // so they can be empty here (matches the Python SDK multiuser default).
+    if (!this.userId) this.userId = '__sdk_multiuser__';
+    if (!this.agentId) this.agentId = '__sdk_multiuser__';
 
     this.proxyEndpoints = options.proxyEndpoints || {};
     this.timeout = options.timeout || 30000;
@@ -759,6 +758,7 @@ export class ArmorIQClient {
       plan: planCapture.plan,
       policy,
       expires_in: validitySeconds,
+      ...(this.userEmailOverride ? { user_email: this.userEmailOverride } : {}),
     };
 
     try {
